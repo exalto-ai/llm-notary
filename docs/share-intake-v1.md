@@ -1,17 +1,18 @@
-# Share intake API v1
+# Hosted Trace intake API v1
 
-This contract uploads one locally finalized `.llmtrace` package to private
-object storage for verified-session admission. Sharing is a separate,
-consent-based action. The proxy never uploads a capture automatically, and an
-encrypted `.llmcapture` is never a valid input.
+This contract uploads one locally notarized `.llmtrace` package to private
+object storage for hosted verification. Sharing is an explicit action. Capture
+and notarization never upload automatically, and an encrypted `.llmcapture` is
+never valid input.
 
-The intake API treats every uploaded byte as untrusted. Admission owns strict
+The hosted API treats every uploaded byte as untrusted. Its worker owns strict
 archive validation, secret scanning, cryptographic verification, public
-storage, and the final reachability decision.
+artifact storage, and the final reachability decision.
 
 ## Package contract
 
-The package uses the deterministic `notary/trace-package/v1` ZIP layout:
+The package uses the deterministic `notary/trace-package/v1` `.llmtrace` ZIP
+layout:
 
 ```text
 archive-manifest.json
@@ -27,66 +28,69 @@ names, traversal, non-canonical ZIP metadata, comments, extra bytes,
 non-canonical manifests, and undeclared files. It reconstructs the archive and
 requires byte-for-byte equality.
 
-## Create or resume a share
+## Create or resume a hosted Trace
 
 ```http
-POST /api/shares
-Authorization: Bearer <account access token>
-Idempotency-Key: <16-200 safe ASCII characters>
+POST /api/traces
+Authorization: Bearer <account access token or API key>
+Idempotency-Key: hosted-trace:<source_trace_id>
 Content-Type: application/json
 
 {
-  "archive_format": "notary/trace-package/v1",
-  "size_bytes": 12345,
-  "sha256": "<64 lowercase hexadecimal characters>",
+  "source_trace_id": "trc-local-example",
+  "package_format": "notary/trace-package/v1",
+  "package_size_bytes": 12345,
+  "package_sha256": "<64 lowercase hexadecimal characters>",
   "visibility": "unlisted",
-  "force": false
+  "password": null,
+  "expires_in_days": null,
+  "allow_high_entropy": false
 }
 ```
 
-`visibility` is required:
+`visibility` is required. `unlisted` creates a stable link without Library
+discovery and adds no-index response headers. `listed` also includes the Trace
+in the Library. A password of 8 through 128 bytes and an expiry of at most 365
+days may be applied atomically so a protected Trace is never briefly exposed.
 
-- `unlisted` is the default product choice. Anyone with the stable link can
-  open it, but it does not appear in the Library and public responses carry a
-  no-index directive.
-- `listed` has the same link access and also appears in the Library index.
+Set `allow_high_entropy` only after reviewing the complete disclosure and
+accepting an entropy-heuristic false positive. It cannot override known secret
+formats, credential fields or headers, signed credential queries, malformed
+packages, or failed cryptographic verification. The hosted Trace records the
+decision and whether the worker actually applied an override.
 
-Owners may add a password or expiry after admission. Those settings gate the
-stable public routes; they do not prevent the platform admission service from
-inspecting and retaining the disclosed package.
-
-`force` defaults to `false`. Set it to `true` only after reviewing the complete
-disclosure and accepting an entropy-heuristic false positive. It does not
-override known secret formats, credential fields or headers, signed credential
-queries, malformed packages, or failed cryptographic verification. The share
-record and admitted public detail retain whether force was requested and
-whether the entropy override was actually applied.
-
-A new share returns `201 Created`. Reusing the idempotency key with identical
-metadata, visibility, and force decision returns `200 OK` and the same share. Reusing it with
-different input returns `409 Conflict`. The local client derives its key from
-the exact archive SHA-256 and chosen visibility so ambiguous network failures
-resume safely.
-
-The response contains a small share record and, while `uploading`, one-use
-upload instructions:
+The source Trace ID is the stable account-scoped identity. An identical retry
+returns the same hosted Trace. Reusing it with different package metadata
+returns `409 Conflict`. While an upload is open, the response also includes a
+short-lived private upload capability:
 
 ```json
 {
-  "share": {
-    "id": "c52ecff9-2bd4-42f3-bb1d-b6ad2b671605",
-    "state": "uploading",
-    "visibility": "unlisted",
-    "published": true,
-    "password_protected": false,
-    "expires_at": null,
-    "force": false,
+  "trace": {
+    "trace_id": "trc-hosted-example",
+    "source_trace_id": "trc-local-example",
+    "status": "verifying",
+    "access": {
+      "visibility": "unlisted",
+      "password_protected": false,
+      "expires_at": null
+    },
+    "package": {
+      "format": "notary/trace-package/v1",
+      "declared_size_bytes": 12345,
+      "declared_sha256": "<sha256>",
+      "admitted_size_bytes": null,
+      "admitted_sha256": null
+    },
+    "verification": {
+      "verified_at": null,
+      "failure_code": null
+    },
+    "allow_high_entropy": false,
     "created_at": 1785294000,
     "updated_at": 1785294000,
-    "admitted_at": null,
-    "failure_code": null,
-    "status_url": "/api/shares/c52ecff9-2bd4-42f3-bb1d-b6ad2b671605",
-    "share_url": null,
+    "status_url": "/api/traces/trc-hosted-example",
+    "public_url": null,
     "package_url": null
   },
   "upload": {
@@ -102,71 +106,62 @@ upload instructions:
 ```
 
 The presigned URL is a temporary write capability and must never be logged.
-Send the exact archived bytes with every returned header.
+Upload the exact package bytes with every returned header.
 
-## Complete and poll
+## Complete, poll, and manage access
 
-```http
-POST /api/shares/{share_id}/complete
-Authorization: Bearer <account access token>
-```
-
-Completion checks signed object metadata, promotes the upload to a
-generation-specific private key, and atomically queues admission. It does not
-claim that the bytes are safe or verified.
+Completion repeats the declared size and hash. The API rejects missing,
+oversized, or mismatched objects and never queues ambiguous bytes:
 
 ```http
-GET /api/shares/{share_id}
-Authorization: Bearer <account access token>
+POST /api/traces/{trace_id}/upload-completion
+Authorization: Bearer <account access token or API key>
+Content-Type: application/json
+
+{
+  "package_size_bytes": 12345,
+  "package_sha256": "<sha256>"
+}
 ```
 
-The state machine is:
+Poll `GET /api/traces/{trace_id}`. The public status model is:
 
 ```text
-uploading -> queued -> verifying -> admitted
-     |                    \-> rejected
-     \-> expired -> uploading
+verifying -> shared
+        \-> rejected
+        \-> failed
+shared   -> stopped
 ```
 
-Only `admitted` shares receive `share_url` and `package_url`. Admission retains
-the exact verified package beside its canonical public trace.
-Failure codes are bounded machine codes and never include matched secret
-values.
+Only `shared` Traces receive `public_url` and `package_url`. Failure codes are
+bounded machine values and never include matched secret text.
 
-An owner can change discoverability, publication state, password access, and
-expiry without changing the stable link. Browser-session and bearer-token
-authentication are both accepted:
+Owners list their Traces with `GET /api/traces` and update access without
+changing the stable ID:
 
 ```http
-PATCH /api/shares/{share_id}
-Authorization: Bearer <account access token>
+PATCH /api/traces/{trace_id}
 Content-Type: application/json
 
 {
   "visibility": "listed",
-  "published": true,
   "password": "a new password",
   "expires_in_days": 30
 }
 ```
 
-Fields are optional, but at least one is required. A non-empty `password` must
-contain 8 through 128 bytes; an empty value removes password protection.
-`expires_in_days` accepts `1` through `365`; `0` removes
-the deadline. `published: false` immediately makes the detail, trace, package,
-and report routes return `404`, while retaining the admitted artifacts so the
-owner can publish the same stable share again.
-
-Public clients send a protected share's UTF-8 password as unpadded base64url in
-the `X-Share-Password` header. The encoding keeps every password accepted by
-the JSON settings API safe for HTTP headers; it is transport encoding, not
-encryption. HTTPS still provides confidentiality in transit.
+Fields are optional, but at least one is required. An empty password removes
+password protection; `expires_in_days: 0` removes the deadline. Password
+changes are rate-limited. `DELETE /api/traces/{trace_id}/share` immediately
+stops public access while retaining the verified artifacts. Creating the same
+source Trace again can resume sharing at the stable URL.
 
 ## Storage lifecycle
 
-Private staging and intake objects are short-lived and deleted after admission
-or rejection, with bucket lifecycle rules as recovery backstops. Admitted
-`trace.otlp.json` and the exact admitted `.llmtrace` package use content-addressed
-object keys. HTTP responses use `private, no-store` because owner access changes
-must take effect immediately. The database records each object key, byte size,
-SHA-256, and the public-package safety contract version.
+Private staging objects are short-lived and deleted after verification or
+rejection, with bucket lifecycle rules as recovery backstops. A shared
+`trace.otlp.json` and exact `.llmtrace` package use immutable,
+content-addressed keys. The database records each key, byte size, SHA-256, and
+the disclosure-safety contract version. Owner and public responses use
+`private, no-store` so password, expiry, and stop-sharing changes take effect
+immediately.

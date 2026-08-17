@@ -22,7 +22,7 @@ const KEYCHAIN_ACCOUNT: &str = "device-refresh-token";
 const API_KEY_ENV: &str = "NOTARYD_PLATFORM_API_KEY";
 const API_KEY_FILE_ENV: &str = "NOTARYD_PLATFORM_API_KEY_FILE";
 const API_ORIGIN_ENV: &str = "NOTARYD_PLATFORM_API_ORIGIN";
-const API_KEY_VERSION_PREFIX: &str = "llmn_v1_";
+const API_KEY_VERSION_PREFIX: &str = "notary_key_";
 const ACCOUNT_REQUEST_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const ACCOUNT_REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 const MAX_ADMISSION_RESPONSE_BYTES: usize = 16 * 1024;
@@ -39,6 +39,7 @@ async fn credential_refresh_guard() -> tokio::sync::MutexGuard<'static, ()> {
 #[derive(Serialize)]
 struct StartAuthorization<'a> {
     device_name: &'a str,
+    capabilities: [&'static str; 3],
 }
 
 #[derive(Deserialize)]
@@ -100,7 +101,6 @@ pub(crate) struct AccountActionLinks {
 
 #[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
 pub(crate) struct BillingState {
-    #[serde(alias = "service_plan")]
     pub(crate) plan: String,
     pub(crate) billing_status: String,
     #[serde(default)]
@@ -152,9 +152,9 @@ struct RefreshResponse {
 
 #[derive(Deserialize)]
 struct WhoamiResponse {
-    user: CliUser,
-    credential: CliCredential,
-    session: Option<CliSession>,
+    account: AccountIdentity,
+    credential: DeviceCredential,
+    device: Option<CurrentDevice>,
     #[serde(default)]
     billing: Option<BillingState>,
     #[serde(default)]
@@ -162,7 +162,7 @@ struct WhoamiResponse {
 }
 
 #[derive(Deserialize)]
-struct CliUser {
+struct AccountIdentity {
     #[serde(default)]
     provider_display_name: Option<String>,
     #[serde(default)]
@@ -172,12 +172,12 @@ struct CliUser {
 }
 
 #[derive(Deserialize)]
-struct CliSession {
+struct CurrentDevice {
     device_name: String,
 }
 
 #[derive(Deserialize)]
-struct CliCredential {
+struct DeviceCredential {
     kind: String,
     name: String,
 }
@@ -407,16 +407,23 @@ pub(crate) async fn start_authorization(
         .build()
         .context("building API client")?;
     let started = client
-        .post(api_origin.api_url("/api/cli/authorizations"))
-        .json(&StartAuthorization { device_name })
+        .post(api_origin.api_url("/api/device-authorizations"))
+        .json(&StartAuthorization {
+            device_name,
+            capabilities: [
+                "hosted_notarization",
+                "consume_credits",
+                "share_notarized_traces",
+            ],
+        })
         .send()
         .await
-        .context("starting CLI authorization")?
+        .context("starting Device authorization")?
         .error_for_status()
-        .context("starting CLI authorization")?
+        .context("starting Device authorization")?
         .json::<AuthorizationStarted>()
         .await
-        .context("reading CLI authorization response")?;
+        .context("reading Device authorization response")?;
     Ok(PendingAuthorization {
         request_id: started.request_id,
         user_code: started.user_code,
@@ -435,10 +442,10 @@ pub(crate) async fn poll_authorization(
         .build()
         .context("building API client")?
         .post(pending.api_origin.api_url(&format!(
-            "/api/cli/authorizations/{}/token",
+            "/api/device-authorizations/{}/token",
             pending.request_id
         )))
-        .header("X-LLM-Notary-Poll-Secret", &pending.poll_secret)
+        .header("X-Notary-Poll-Secret", &pending.poll_secret)
         .send()
         .await
         .context("polling LLM Notary account authorization")?;
@@ -479,17 +486,17 @@ pub(crate) async fn logout_for_service() -> Result<()> {
         .build()
         .context("building API client")?;
     let response = client
-        .post(credentials.api_origin.api_url("/api/cli/logout"))
+        .delete(credentials.api_origin.api_url("/api/device-session"))
         .json(&RefreshRequest {
             refresh_token: &credentials.refresh_token,
         })
         .send()
         .await
-        .context("revoking CLI session")?;
+        .context("revoking Device session")?;
     if !response.status().is_success() && response.status() != StatusCode::UNAUTHORIZED {
         response
             .error_for_status()
-            .context("revoking CLI session")?;
+            .context("revoking Device session")?;
     }
     delete_credentials()?;
     Ok(())
@@ -559,7 +566,7 @@ async fn lookup_account_status(authenticated: AuthenticatedApi) -> AccountConnec
     let origin = authenticated.origin.clone();
     let response = match account_http_client_builder().build() {
         Ok(client) => match client
-            .get(origin.api_url("/api/cli/me"))
+            .get(origin.api_url("/api/device-session"))
             .bearer_auth(authenticated.access_token)
             .send()
             .await
@@ -602,13 +609,13 @@ async fn lookup_account_status(authenticated: AuthenticatedApi) -> AccountConnec
             );
         }
     };
-    let device_name = response.session.map(|session| session.device_name);
+    let device_name = response.device.map(|device| device.device_name);
     AccountConnectionStatus {
         signed_in: true,
         connection_state: AccountConnectionState::Connected,
-        provider_display_name: response.user.provider_display_name,
-        display_name: response.user.display_name,
-        auth_provider: response.user.auth_provider,
+        provider_display_name: response.account.provider_display_name,
+        display_name: response.account.display_name,
+        auth_provider: response.account.auth_provider,
         device_name,
         credential_kind: Some(response.credential.kind),
         credential_name: Some(response.credential.name),
@@ -628,7 +635,7 @@ async fn refresh_device_session_for_status(
         .build()
         .map_err(|_| AccountConnectionState::Unavailable)?;
     let response = client
-        .post(origin.api_url("/api/cli/token"))
+        .post(origin.api_url("/api/device-session/token"))
         .json(&RefreshRequest {
             refresh_token: &credentials.refresh_token,
         })
@@ -874,7 +881,7 @@ fn load_stored_api_origin() -> Result<ApiOrigin> {
     let path = credentials_path()?;
     let data = fs::read(&path).with_context(|| format!("read {}", path.display()))?;
     let credentials: FileCredentials =
-        serde_json::from_slice(&data).context("parse CLI credentials")?;
+        serde_json::from_slice(&data).context("parse Device credentials")?;
     Ok(credentials.api_origin)
 }
 
@@ -938,18 +945,18 @@ async fn refresh(credentials: &FileCredentials) -> Result<(String, String)> {
     let response = http_client_builder()
         .build()
         .context("building API client")?
-        .post(credentials.api_origin.api_url("/api/cli/token"))
+        .post(credentials.api_origin.api_url("/api/device-session/token"))
         .json(&RefreshRequest {
             refresh_token: &credentials.refresh_token,
         })
         .send()
         .await
-        .context("refreshing CLI credentials")?
+        .context("refreshing Device credentials")?
         .error_for_status()
-        .context("refreshing CLI credentials")?
+        .context("refreshing Device credentials")?
         .json::<RefreshResponse>()
         .await
-        .context("reading refreshed CLI credentials")?;
+        .context("reading refreshed Device credentials")?;
     let _ = response.expires_in;
     Ok((response.access_token, response.refresh_token))
 }
@@ -961,7 +968,7 @@ async fn refresh_for_sharing_status(
         .build()
         .map_err(|_| SharingAuthenticationError::Unavailable)?;
     let response = client
-        .post(credentials.api_origin.api_url("/api/cli/token"))
+        .post(credentials.api_origin.api_url("/api/device-session/token"))
         .json(&RefreshRequest {
             refresh_token: &credentials.refresh_token,
         })
@@ -1004,7 +1011,7 @@ fn load_credentials() -> Result<FileCredentials> {
     let path = credentials_path()?;
     let data = fs::read(&path).with_context(|| format!("read {}", path.display()))?;
     let mut credentials: FileCredentials =
-        serde_json::from_slice(&data).context("parse CLI credentials")?;
+        serde_json::from_slice(&data).context("parse Device credentials")?;
     if credentials.refresh_token.is_empty() {
         credentials.refresh_token = keychain_load()?.ok_or_else(|| {
             anyhow!(
@@ -1058,7 +1065,7 @@ fn write_file_credentials(credentials: &FileCredentials) -> Result<()> {
 fn write_file_credentials_at(path: &Path, credentials: &FileCredentials) -> Result<()> {
     storage::write_private_file_atomically(
         path,
-        &serde_json::to_vec(credentials).context("encode CLI credentials")?,
+        &serde_json::to_vec(credentials).context("encode Device credentials")?,
     )
 }
 
@@ -1253,7 +1260,7 @@ mod tests {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let origin = format!("http://{}", listener.local_addr().unwrap());
         let app = axum::Router::new().route(
-            "/api/cli/token",
+            "/api/device-session/token",
             axum::routing::post(move || async move {
                 (status, [("content-type", "application/json")], body)
             }),
@@ -1323,9 +1330,9 @@ mod tests {
     #[test]
     fn whoami_accepts_separate_capture_and_notarization_balances() {
         let response: WhoamiResponse = serde_json::from_value(serde_json::json!({
-            "user": { "provider_display_name": "fixture-user" },
+            "account": { "provider_display_name": "fixture-user" },
             "credential": { "kind": "device_session", "name": "fixture device" },
-            "session": { "device_name": "fixture device" },
+            "device": { "device_name": "fixture device" },
             "billing": { "plan": "one_gb", "billing_status": "active" },
             "credits": {
                 "capture": {
@@ -1352,6 +1359,17 @@ mod tests {
         let credits = response.credits.unwrap();
         assert_eq!(credits.capture.total_remaining_bytes, 1024);
         assert_eq!(credits.notarization.total_remaining_bytes, 2048);
+    }
+
+    #[test]
+    fn billing_state_rejects_the_retired_service_plan_field() {
+        assert!(
+            serde_json::from_value::<BillingState>(serde_json::json!({
+                "service_plan": "one_gb",
+                "billing_status": "active"
+            }))
+            .is_err()
+        );
     }
 
     #[test]

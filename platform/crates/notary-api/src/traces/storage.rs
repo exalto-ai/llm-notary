@@ -56,7 +56,7 @@ impl TraceStorage {
             storage.secret_access_key.clone(),
             None,
             None,
-            "llm-notary-platform-config",
+            "notary-api-config",
         );
         let config = aws_sdk_s3::Config::builder()
             .behavior_version(BehaviorVersion::latest())
@@ -131,10 +131,12 @@ impl TraceStorage {
     pub fn committed_artifact_key(
         &self,
         trace_id: &str,
+        verification_claim: &str,
         kind: &str,
         sha256: &str,
     ) -> Result<String> {
         validate_identifier(trace_id, "trace ID")?;
+        validate_identifier(verification_claim, "verification claim")?;
         if !matches!(kind, "content" | "package") {
             bail!("committed artifact kind is unsupported");
         }
@@ -152,7 +154,7 @@ impl TraceStorage {
             _ => unreachable!("validated above"),
         };
         Ok(format!(
-            "{prefix}/{segment}/{trace_id}/{sha256}.{extension}"
+            "{prefix}/{segment}/{trace_id}/{verification_claim}/{sha256}.{extension}"
         ))
     }
 
@@ -545,6 +547,24 @@ mod tests {
     use uuid::Uuid;
 
     use super::*;
+
+    #[test]
+    fn committed_artifact_keys_are_unique_to_each_verification_claim() {
+        let storage = TraceStorage::Mock(MockTraceStorage::new());
+        let sha256 = "a".repeat(64);
+        let first = storage
+            .committed_artifact_key("trc-retry", "claim-one", "package", &sha256)
+            .unwrap();
+        let retry = storage
+            .committed_artifact_key("trc-retry", "claim-two", "package", &sha256)
+            .unwrap();
+
+        assert_ne!(first, retry);
+        assert_eq!(
+            retry,
+            format!("test/packages/trc-retry/claim-two/{sha256}.llmtrace")
+        );
+    }
 
     #[tokio::test]
     #[ignore = "requires an explicitly configured private S3-compatible test bucket"]

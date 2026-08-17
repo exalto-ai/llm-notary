@@ -2294,19 +2294,19 @@ mod tests {
             "signed_in": true,
             "provider_display_name": "octocat",
             "device_name": "workstation",
-            "credential_kind": "cli_session",
+            "credential_kind": "device_session",
             "credential_name": "workstation"
         });
         assert_eq!(
             human_output(&CliCommand::Whoami, &connected).unwrap(),
-            "Connected to LLM Notary as octocat (cli_session: workstation)"
+            "Connected to LLM Notary as octocat (device_session: workstation)"
         );
         let rich_connected = json!({
             "signed_in": true,
             "connection_state": "connected",
             "display_name": "Example Person",
             "auth_provider": "google",
-            "credential_kind": "cli_session",
+            "credential_kind": "device_session",
             "credential_name": "workstation",
             "billing": { "plan": "one_gb", "billing_status": "active", "purchase_mode": "live" },
             "credits": {
@@ -2322,7 +2322,7 @@ mod tests {
             }
         });
         let rich_output = human_output(&CliCommand::Whoami, &rich_connected).unwrap();
-        assert!(rich_output.contains("Example Person (google; cli_session: workstation)"));
+        assert!(rich_output.contains("Example Person (google; device_session: workstation)"));
         assert!(rich_output.contains("plan one_gb (active, purchase mode live)"));
         assert!(rich_output.contains("notarization used 1.9 MiB / 19.1 MiB granted"));
         assert!(rich_output.contains("capture used 976.6 KiB / 9.5 MiB granted"));

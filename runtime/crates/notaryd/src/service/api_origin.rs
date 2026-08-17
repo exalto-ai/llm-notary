@@ -116,8 +116,8 @@ mod tests {
         let secure = ApiOrigin::parse("https://EXAMPLE.test:443/").unwrap();
         assert_eq!(secure.to_string(), "https://example.test");
         assert_eq!(
-            secure.api_url("/api/cli/me").as_str(),
-            "https://example.test/api/cli/me"
+            secure.api_url("/api/device-session").as_str(),
+            "https://example.test/api/device-session"
         );
         assert_eq!(
             secure.web_url("/dashboard/credits").as_str(),

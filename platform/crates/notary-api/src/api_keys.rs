@@ -72,7 +72,7 @@ pub(super) fn router() -> OpenApiRouter<NotaryApiState> {
 
 #[utoipa::path(
     post,
-    path = "/api/me/api-keys",
+    path = "/api/api-keys",
     summary = "Create an account API key",
     request_body = CreateApiKeyRequest,
     responses(
@@ -82,7 +82,7 @@ pub(super) fn router() -> OpenApiRouter<NotaryApiState> {
         (status = 500, body = super::ErrorResponse)
     ),
     security(("browserSession" = [])),
-    tag = "browser-auth"
+    tag = "api-keys"
 )]
 async fn create_api_key(
     State(state): State<NotaryApiState>,
@@ -107,9 +107,15 @@ async fn create_api_key(
     }
     let scopes = parse_scopes(&request.scopes)?;
     let id = typed_id("key-");
-    let prefix = format!("{API_KEY_VERSION_PREFIX}{}", &id[..DISPLAY_ID_BYTES]);
+    let credential_id = id
+        .strip_prefix("key-")
+        .expect("typed API key ID has its declared prefix");
+    let prefix = format!(
+        "{API_KEY_VERSION_PREFIX}{}",
+        &credential_id[..DISPLAY_ID_BYTES]
+    );
     let secret_part = random_token();
-    let secret = format!("{API_KEY_VERSION_PREFIX}{id}_{secret_part}");
+    let secret = format!("{API_KEY_VERSION_PREFIX}{credential_id}_{secret_part}");
     let secret_hash = Sha256::digest(secret_part.as_bytes()).to_vec();
     let scope_names = scopes
         .iter()
@@ -152,7 +158,7 @@ async fn create_api_key(
 
 #[utoipa::path(
     get,
-    path = "/api/me/api-keys",
+    path = "/api/api-keys",
     summary = "List account API keys",
     params(("limit" = Option<u32>, Query, description = "Page size; defaults to 50", minimum = 1, maximum = 100), ("cursor" = Option<String>, Query)),
     responses(
@@ -162,7 +168,7 @@ async fn create_api_key(
         (status = 500, body = super::ErrorResponse)
     ),
     security(("browserSession" = [])),
-    tag = "browser-auth"
+    tag = "api-keys"
 )]
 async fn list_api_keys(
     State(state): State<NotaryApiState>,
@@ -174,7 +180,7 @@ async fn list_api_keys(
     let limit = query
         .limit(pagination::DEFAULT_PAGE_LIMIT, pagination::MAX_PAGE_LIMIT)
         .map_err(pagination::api_error)?;
-    let scope = CursorScope::new("/api/me/api-keys", &user.0, "created_at desc, id desc")
+    let scope = CursorScope::new("/api/api-keys", &user.0, "created_at desc, id desc")
         .map_err(pagination::api_error)?;
     let position = query
         .cursor
@@ -209,7 +215,7 @@ async fn list_api_keys(
 
 #[utoipa::path(
     delete,
-    path = "/api/me/api-keys/{api_key_id}",
+    path = "/api/api-keys/{api_key_id}",
     summary = "Revoke an account API key",
     params(("api_key_id" = String, Path)),
     responses(
@@ -219,7 +225,7 @@ async fn list_api_keys(
         (status = 500, body = super::ErrorResponse)
     ),
     security(("browserSession" = [])),
-    tag = "browser-auth"
+    tag = "api-keys"
 )]
 async fn revoke_api_key(
     State(state): State<NotaryApiState>,

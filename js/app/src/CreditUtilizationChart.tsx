@@ -5,7 +5,7 @@ import type { getCurrentUser } from './platform-api/client';
 
 const chartNumber = new Intl.NumberFormat(undefined, { maximumFractionDigits: 2 });
 
-type Credits = NonNullable<Awaited<ReturnType<typeof getCurrentUser>>>['credits'];
+type Credits = NonNullable<Awaited<ReturnType<typeof getCurrentUser>>>['usage']['credits'];
 
 interface CreditUtilizationChartProps {
   credits: Credits;

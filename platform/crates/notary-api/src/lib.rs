@@ -47,12 +47,14 @@ mod traces;
 mod verification;
 
 #[cfg(test)]
-use account::{NotaryStats, account_notary_stats, delete_account, me};
+use account::{
+    DeleteAccountRequest, NotaryStats, account as get_account, account_notary_stats, delete_account,
+};
 #[cfg(test)]
 use browser_auth::{BrowserAuthProvider, GoogleUser, issue_web_session, upsert_google_user};
 #[cfg(test)]
 use devices::{
-    RefreshRequest, issue_device_session, list_devices, refresh_device_tokens,
+    DeviceRefreshRequest, issue_device_session, list_devices, refresh_device_tokens,
     revoke_web_device_session,
 };
 
@@ -231,20 +233,25 @@ type ApiResult<T> = std::result::Result<T, ApiError>;
 #[derive(OpenApi)]
 #[openapi(
     info(
-        title = "LLM Notary hosted platform API",
+        title = "Notary platform API",
         version = "1.0.0",
-        description = "Public website, account, Device authorization, verified-session sharing, and Listed-share catalog API for the hosted LLM Notary platform. This contract is separate from the loopback local administration API."
+        description = "Account, Device, hosted Trace, public Trace, Registry, verification, admission, usage, credits, and billing API for Notary by Exalto. This contract is separate from the loopback local administration API."
     ),
+    servers((url = "https://notary.exalto.ai", description = "Notary by Exalto")),
     modifiers(&SecurityAddon),
     tags(
-        (name = "health", description = "Hosted API health and discovery"),
-        (name = "browser-auth", description = "Google- or GitHub-backed browser sessions"),
-        (name = "cli-auth", description = "Local service authorization and Device sessions"),
-        (name = "notary-admission", description = "One-operation hosted notary admission tickets"),
+        (name = "health", description = "Notary platform health"),
+        (name = "browser-auth", description = "Google- or GitHub-backed browser authentication"),
+        (name = "account", description = "Current Account identity and usage"),
+        (name = "devices", description = "Connected devices and Device authorization"),
+        (name = "api-keys", description = "Scoped unattended API credentials"),
+        (name = "traces", description = "Authenticated hosted Trace intake and access settings"),
+        (name = "public-traces", description = "Listed discovery and stable public Trace access"),
+        (name = "registry", description = "Versioned Registry of Official Notaries"),
+        (name = "notary-admission", description = "One-operation Notary admission tickets"),
         (name = "billing", description = "Stripe-hosted subscriptions and additional notarization purchases"),
-        (name = "verification", description = "Anonymous, retention-free portable package verification"),
-        (name = "sharing", description = "Authenticated share intake and stable direct links"),
-        (name = "library", description = "Small catalog of Listed shares")
+        (name = "credits", description = "Credit offers and history"),
+        (name = "verification", description = "Anonymous, retention-free portable package verification")
     )
 )]
 struct HostedApiDoc;
@@ -527,7 +534,7 @@ async fn observe_http_request(request: Request, next: Next) -> Response {
     async move {
         let started = Instant::now();
         let mut response = next.run(request).await;
-        if route.starts_with("/api/public/shares") {
+        if route.starts_with("/api/public/traces") {
             response.headers_mut().insert(
                 header::CACHE_CONTROL,
                 HeaderValue::from_static("private, no-store"),
@@ -838,14 +845,19 @@ pub(crate) async fn insert_test_github_user(
 
 #[cfg(test)]
 mod tests {
-    use notary_core::registry::{
-        NotaryKeyStatus, NotaryTransport, REGISTRY_FORMAT, RegistryRecord, key_id, parse_registry,
+    use axum::{
+        body::Body,
+        http::{Method, Request},
     };
+    use notary_core::registry::{
+        NotaryKeyStatus, NotaryTransport, REGISTRY_FORMAT, RegistryRecord, key_id,
+    };
+    use tower::ServiceExt;
 
     use super::*;
 
     #[test]
-    fn single_executable_exposes_only_the_public_serve_and_migrate_commands() {
+    fn single_executable_exposes_public_commands_and_the_hidden_worker() {
         let parse = |arguments: &[&str]| {
             NotaryApiArgs::parse(arguments.iter().map(std::ffi::OsString::from))
                 .map(|arguments| arguments.command)
@@ -888,14 +900,42 @@ mod tests {
     }
 
     #[test]
-    fn hosted_registry_response_is_the_canonical_runtime_contract() {
+    fn hosted_registry_response_uses_the_canonical_external_key_field() {
         let response = registry::RegistryResponse::from(test_registry());
-        let encoded = serde_json::to_vec(&response).unwrap();
-        let registry = parse_registry(&encoded).unwrap();
+        let bytes = serde_json::to_vec(&response).unwrap();
+        let parsed = registry::parse_registry_document(&bytes).unwrap();
+        let encoded = serde_json::to_value(response).unwrap();
+        let record = encoded["notaries"][0].as_object().unwrap();
 
-        assert_eq!(registry.format, REGISTRY_FORMAT);
-        assert_eq!(registry.notaries[0].name, "Test notary");
-        assert_eq!(registry.notaries[0].operator, "Exalto");
+        assert_eq!(encoded["format"], REGISTRY_FORMAT);
+        assert_eq!(record["name"], "Test notary");
+        assert_eq!(record["operator"], "Exalto");
+        assert!(record.contains_key("verification_key"));
+        assert!(!record.contains_key("public_key"));
+        assert_eq!(parsed, test_registry());
+    }
+
+    fn lazy_test_state() -> NotaryApiState {
+        NotaryApiState {
+            database: PgPool::connect_lazy("postgres://postgres:postgres@localhost/postgres")
+                .expect("lazy database"),
+            _test_database: None,
+            http: reqwest::Client::new(),
+            github_client_id: "client-id".to_owned(),
+            github_client_secret: "secret".to_owned(),
+            github_callback_url: Url::parse("https://notary.exalto.ai/api/auth/github/callback")
+                .expect("callback URL"),
+            google_client_id: "google-client-id".to_owned(),
+            google_client_secret: "google-secret".to_owned(),
+            google_callback_url: Url::parse("https://notary.exalto.ai/api/auth/google/callback")
+                .expect("Google callback URL"),
+            public_origin: Url::parse("https://notary.exalto.ai").expect("app URL"),
+            secure_cookies: true,
+            registry: test_registry(),
+            traces: traces::owner::TraceService::disabled_for_test(),
+            admission: Arc::new(NotaryAdmissionConfig::for_test()),
+            billing: billing::BillingService::disabled_for_test(),
+        }
     }
 
     #[tokio::test]
@@ -1013,52 +1053,57 @@ mod tests {
     #[test]
     fn public_routes_and_openapi_are_registered_together() {
         let expected = [
-            "DELETE /api/cli/sessions/{session_id}",
-            "DELETE /api/me",
-            "DELETE /api/me/api-keys/{api_key_id}",
+            "DELETE /api/account",
+            "DELETE /api/api-keys/{api_key_id}",
+            "DELETE /api/device-session",
+            "DELETE /api/devices/{device_id}",
+            "DELETE /api/traces/{trace_id}/share",
+            "GET /api/account",
+            "GET /api/api-keys",
             "GET /api/auth/google",
             "GET /api/auth/google/callback",
             "GET /api/auth/github",
             "GET /api/auth/github/callback",
             "GET /api/auth/providers",
-            "GET /api/cli/authorizations/{request_id}/approval",
-            "GET /api/cli/me",
-            "GET /api/cli/sessions",
+            "GET /api/billing/purchases",
+            "GET /api/billing/purchases/{purchase_id}",
+            "GET /api/device-authorizations/{request_id}/approval",
+            "GET /api/device-session",
+            "GET /api/devices",
             "GET /api/healthz",
-            "GET /api/me",
-            "GET /api/me/api-keys",
-            "GET /api/me/billing/purchases",
-            "GET /api/me/billing/purchases/{purchase_id}",
-            "GET /api/me/credits/history",
-            "GET /api/me/shares",
-            "GET /api/me/credit-offers",
-            "GET /api/notary",
-            "GET /api/public/shares",
-            "GET /api/public/shares/{share_id}",
-            "GET /api/public/shares/{share_id}/package.llmtrace",
-            "GET /api/public/shares/{share_id}/trace.otlp.json",
-            "GET /api/shares/{share_id}",
-            "PATCH /api/shares/{share_id}",
+            "GET /api/credit-offers",
+            "GET /api/credits/history",
+            "GET /api/public/traces",
+            "GET /api/public/traces/{trace_id}",
+            "GET /api/public/traces/{trace_id}/content",
+            "GET /api/public/traces/{trace_id}/package.llmtrace",
+            "GET /api/public/traces/{trace_id}/trace.otlp.json",
             "GET /api/readyz",
+            "GET /api/registry",
+            "GET /api/traces",
+            "GET /api/traces/{trace_id}",
+            "GET /api/usage",
+            "PATCH /api/traces/{trace_id}",
+            "POST /api/api-keys",
             "POST /api/auth/logout",
+            "POST /api/billing/checkout-sessions",
+            "POST /api/billing/portal-sessions",
             "POST /api/billing/stripe/webhook",
-            "POST /api/cli/authorizations",
-            "POST /api/cli/authorizations/{request_id}/approval",
-            "POST /api/cli/authorizations/{request_id}/token",
-            "POST /api/cli/logout",
-            "POST /api/cli/token",
-            "POST /api/me/api-keys",
-            "POST /api/me/billing/checkout-sessions",
-            "POST /api/me/billing/portal-sessions",
-            "POST /api/me/billing/subscription-checkout-sessions",
-            "POST /api/verify",
-            "POST /api/shares",
-            "POST /api/shares/{share_id}/complete",
-            "POST /api/public/shares/{share_id}/reports",
+            "POST /api/billing/subscription-checkout-sessions",
+            "POST /api/device-authorizations",
+            "POST /api/device-authorizations/{request_id}/approval",
+            "POST /api/device-authorizations/{request_id}/token",
+            "POST /api/device-session/token",
             "POST /api/internal/notary/admissions/redeem",
+            "POST /api/internal/notary/operations/activate",
             "POST /api/internal/notary/operations/settle",
-            "POST /api/me/credit-offers/{offer_id}/claim",
+            "POST /api/credit-offers/{offer_id}/claim",
             "POST /api/notary/admissions",
+            "POST /api/public/traces/{trace_id}/access",
+            "POST /api/public/traces/{trace_id}/reports",
+            "POST /api/traces",
+            "POST /api/traces/{trace_id}/upload-completion",
+            "POST /api/verify",
         ]
         .into_iter()
         .map(str::to_owned)
@@ -1086,43 +1131,71 @@ mod tests {
         let upload_schema = &document["components"]["schemas"]["TracePackageBody"];
         assert_eq!(upload_schema["type"], "string");
         assert_eq!(upload_schema["format"], "binary");
-        let settings_patch = &document["paths"]["/api/shares/{share_id}"]["patch"];
+        let settings_patch = &document["paths"]["/api/traces/{trace_id}"]["patch"];
         for status in ["400", "403", "429"] {
             assert!(settings_patch["responses"].get(status).is_some());
         }
         assert_eq!(
-            document["components"]["schemas"]["UpdateShareSettings"]["properties"]["expires_in_days"]
+            document["components"]["schemas"]["UpdateTraceAccessSettings"]["properties"]["expires_in_days"]
                 ["maximum"],
             365
         );
         assert_eq!(
-            document["components"]["schemas"]["CreateShareReport"]["properties"]["message"]["maxLength"],
+            document["components"]["schemas"]["CreateTraceReport"]["properties"]["message"]["maxLength"],
             500
+        );
+        assert_eq!(document["info"]["title"], "Notary platform API");
+        assert_eq!(document["servers"][0]["url"], "https://notary.exalto.ai");
+        for removed in [
+            "/api/me",
+            "/api/cli/authorizations",
+            "/api/notary",
+            "/api/shares",
+            "/api/public/shares",
+        ] {
+            assert!(!paths.contains_key(removed));
+        }
+        assert!(paths.keys().all(|path| !path.starts_with("/api/me/")));
+        let schemas = document["components"]["schemas"]
+            .as_object()
+            .expect("OpenAPI schemas");
+        assert!(
+            schemas
+                .keys()
+                .all(|name| !name.contains("Share") && !name.contains("Cli"))
         );
     }
 
     #[tokio::test]
+    async fn retired_hosted_routes_return_not_found() {
+        let app = router(lazy_test_state());
+        for (method, path) in [
+            (Method::GET, "/api/me"),
+            (Method::GET, "/api/me/credit-offers"),
+            (Method::GET, "/api/notary"),
+            (Method::POST, "/api/cli/authorizations"),
+            (Method::POST, "/api/cli/token"),
+            (Method::POST, "/api/shares"),
+            (Method::GET, "/api/public/shares"),
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method(method)
+                        .uri(path)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::NOT_FOUND, "{path}");
+        }
+    }
+
+    #[tokio::test]
     async fn authorization_url_uses_the_exact_callback_and_state() {
-        let state = NotaryApiState {
-            database: PgPool::connect_lazy("postgres://postgres:postgres@localhost/postgres")
-                .expect("lazy database"),
-            _test_database: None,
-            http: reqwest::Client::new(),
-            github_client_id: "client-id".to_owned(),
-            github_client_secret: "secret".to_owned(),
-            github_callback_url: Url::parse("https://notary.exalto.ai/api/auth/github/callback")
-                .expect("callback URL"),
-            google_client_id: "google-client-id".to_owned(),
-            google_client_secret: "google-secret".to_owned(),
-            google_callback_url: Url::parse("https://notary.exalto.ai/api/auth/google/callback")
-                .expect("Google callback URL"),
-            public_origin: Url::parse("https://notary.exalto.ai").expect("app URL"),
-            secure_cookies: true,
-            registry: test_registry(),
-            traces: traces::owner::TraceService::disabled_for_test(),
-            admission: Arc::new(NotaryAdmissionConfig::for_test()),
-            billing: billing::BillingService::disabled_for_test(),
-        };
+        let state = lazy_test_state();
         let url = state
             .authorization_url("state-token")
             .expect("authorization URL");
@@ -1243,7 +1316,7 @@ mod tests {
             admission: Arc::new(NotaryAdmissionConfig::for_test()),
             billing: billing::BillingService::disabled_for_test(),
         };
-        let response = me(
+        let response = get_account(
             State(state),
             CookieJar::new().add(Cookie::new(SESSION_COOKIE, session_token)),
         )
@@ -1300,7 +1373,7 @@ mod tests {
         };
         let refreshed = refresh_device_tokens(
             State(state.clone()),
-            Json(RefreshRequest {
+            Json(DeviceRefreshRequest {
                 refresh_token: original_refresh_token.clone(),
             }),
         )
@@ -1313,7 +1386,7 @@ mod tests {
 
         let replay = refresh_device_tokens(
             State(state.clone()),
-            Json(RefreshRequest {
+            Json(DeviceRefreshRequest {
                 refresh_token: original_refresh_token,
             }),
         )
@@ -1404,7 +1477,7 @@ mod tests {
             Err(_) => panic!("list Device sessions"),
         };
         assert_eq!(sessions.len(), 1);
-        assert_eq!(sessions[0].id, own_id);
+        assert_eq!(sessions[0].device_id, own_id);
 
         let revoked =
             revoke_web_device_session(State(state.clone()), jar(), Path(own_id.clone())).await;
@@ -1419,7 +1492,9 @@ mod tests {
             Ok(sessions) => sessions.0.items,
             Err(_) => panic!("list Device sessions after revoke"),
         };
-        assert!(sessions.is_empty());
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].device_id, own_id);
+        assert_eq!(sessions[0].revoked_at, Some(now));
 
         let cross_account = revoke_web_device_session(State(state), jar(), Path(other_id)).await;
         assert!(matches!(
@@ -1523,7 +1598,7 @@ mod tests {
         .await
         .expect("third page")
         .0;
-        assert_eq!(third.items[0].id, oldest_id);
+        assert_eq!(third.items[0].device_id, oldest_id);
         assert!(third.next_cursor.is_none());
     }
 
@@ -1629,7 +1704,15 @@ mod tests {
             billing: billing::BillingService::disabled_for_test(),
         };
         let jar = CookieJar::new().add(Cookie::new(SESSION_COOKIE, web_token));
-        let (_, status) = delete_account(State(state.clone()), jar).await.unwrap();
+        let (_, status) = delete_account(
+            State(state.clone()),
+            jar,
+            Json(DeleteAccountRequest {
+                confirmation: "DELETE".to_owned(),
+            }),
+        )
+        .await
+        .unwrap();
         assert_eq!(status, StatusCode::NO_CONTENT);
 
         let remaining: (i64, i64, i64, i64, i64, i64, i64) = sqlx::query_as(

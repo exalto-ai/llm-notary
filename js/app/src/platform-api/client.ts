@@ -38,10 +38,10 @@ function errorMessage(error: unknown, fallback: string): string {
 
 type PageOptions = { limit?: number; cursor?: string };
 
-export async function getListedShares(
+export async function getListedTraces(
   options: PageOptions & { search?: string; provider?: string } = {},
 ) {
-  const { data, error, response } = await client.GET('/api/public/shares', {
+  const { data, error, response } = await client.GET('/api/public/traces', {
     params: { query: options },
   });
   if (!response.ok || !data) {
@@ -50,31 +50,34 @@ export async function getListedShares(
   return data;
 }
 
-export async function getNotaryDirectory() {
-  const { data, error, response } = await client.GET('/api/notary');
+export async function getRegistry() {
+  const { data, error, response } = await client.GET('/api/registry');
   if (!response.ok || !data) {
     throw new PlatformApiError(
-      errorMessage(error, 'Could not load the notary directory.'),
+      errorMessage(error, 'Could not load the notary Registry.'),
       response.status,
     );
   }
   return data;
 }
 
-export function encodeSharePassword(password: string) {
-  const bytes = new TextEncoder().encode(password);
-  const binary = String.fromCharCode(...bytes);
-  return btoa(binary).replaceAll('+', '-').replaceAll('/', '_').replace(/=+$/, '');
+export async function accessPublicTrace(traceId: string, password: string) {
+  const { error, response } = await client.POST('/api/public/traces/{trace_id}/access', {
+    params: { path: { trace_id: traceId } },
+    body: { password },
+  });
+  if (!response.ok) {
+    throw new PlatformApiError(
+      errorMessage(error, 'Could not open this public Trace.'),
+      response.status,
+      errorCode(error),
+    );
+  }
 }
 
-function sharePasswordHeaders(password?: string) {
-  return password ? { 'X-Share-Password': encodeSharePassword(password) } : undefined;
-}
-
-export async function getPublicShare(shareId: string, password?: string) {
-  const { data, error, response } = await client.GET('/api/public/shares/{share_id}', {
-    params: { path: { share_id: shareId } },
-    headers: sharePasswordHeaders(password),
+export async function getPublicTrace(traceId: string) {
+  const { data, error, response } = await client.GET('/api/public/traces/{trace_id}', {
+    params: { path: { trace_id: traceId } },
   });
   if (!response.ok || !data) {
     throw new PlatformApiError(
@@ -86,12 +89,11 @@ export async function getPublicShare(shareId: string, password?: string) {
   return data;
 }
 
-export async function getSharedTrace(shareId: string, password?: string) {
+export async function getPublicTraceOtlp(traceId: string) {
   const { data, error, response } = await client.GET(
-    '/api/public/shares/{share_id}/trace.otlp.json',
+    '/api/public/traces/{trace_id}/trace.otlp.json',
     {
-      params: { path: { share_id: shareId } },
-      headers: sharePasswordHeaders(password),
+      params: { path: { trace_id: traceId } },
     },
   );
   if (!response.ok || data === undefined) {
@@ -104,13 +106,10 @@ export async function getSharedTrace(shareId: string, password?: string) {
   return data;
 }
 
-export async function downloadSharedPackage(shareId: string, password?: string) {
+export async function downloadPublicTracePackage(traceId: string) {
   const response = await fetch(
-    `/api/public/shares/${encodeURIComponent(shareId)}/package.llmtrace`,
-    {
-      credentials: 'same-origin',
-      headers: sharePasswordHeaders(password),
-    },
+    `/api/public/traces/${encodeURIComponent(traceId)}/package.llmtrace`,
+    { credentials: 'same-origin' },
   );
   if (!response.ok) {
     const error = await response.json().catch(() => null);
@@ -123,17 +122,15 @@ export async function downloadSharedPackage(shareId: string, password?: string) 
   return response.blob();
 }
 
-export async function reportPublicShare(
-  shareId: string,
+export async function reportPublicTrace(
+  traceId: string,
   body: {
     reason: 'sensitive_information' | 'harassment' | 'illegal_content' | 'spam' | 'other';
     message?: string;
   },
-  password?: string,
 ) {
-  const { data, error, response } = await client.POST('/api/public/shares/{share_id}/reports', {
-    params: { path: { share_id: shareId } },
-    headers: sharePasswordHeaders(password),
+  const { data, error, response } = await client.POST('/api/public/traces/{trace_id}/reports', {
+    params: { path: { trace_id: traceId } },
     body,
   });
   if (!response.ok || !data) {
@@ -146,8 +143,8 @@ export async function reportPublicShare(
   return data;
 }
 
-export async function getCliSessions(options: PageOptions = {}) {
-  const { data, error, response } = await client.GET('/api/cli/sessions', {
+export async function getDevices(options: PageOptions = {}) {
+  const { data, error, response } = await client.GET('/api/devices', {
     params: { query: options },
   });
   if (!response.ok || !data) {
@@ -163,7 +160,7 @@ export type AccountApiKey = components['schemas']['ApiKeyResponse'];
 export type ApiKeyScope = components['schemas']['ApiScope'];
 
 export async function getApiKeys(options: PageOptions = {}) {
-  const { data, error, response } = await client.GET('/api/me/api-keys', {
+  const { data, error, response } = await client.GET('/api/api-keys', {
     params: { query: options },
   });
   if (!response.ok || !data) {
@@ -177,7 +174,7 @@ export async function createApiKey(body: {
   scopes: string[];
   expires_at: number | null;
 }) {
-  const { data, error, response } = await client.POST('/api/me/api-keys', { body });
+  const { data, error, response } = await client.POST('/api/api-keys', { body });
   if (!response.ok || !data) {
     throw new PlatformApiError(
       errorMessage(error, 'Could not create the API key.'),
@@ -188,7 +185,7 @@ export async function createApiKey(body: {
 }
 
 export async function revokeApiKey(apiKeyId: string) {
-  const { error, response } = await client.DELETE('/api/me/api-keys/{api_key_id}', {
+  const { error, response } = await client.DELETE('/api/api-keys/{api_key_id}', {
     params: { path: { api_key_id: apiKeyId } },
   });
   if (!response.ok) {
@@ -199,8 +196,8 @@ export async function revokeApiKey(apiKeyId: string) {
   }
 }
 
-export async function getMyShares(options: PageOptions = {}) {
-  const { data, error, response } = await client.GET('/api/me/shares', {
+export async function getHostedTraces(options: PageOptions = {}) {
+  const { data, error, response } = await client.GET('/api/traces', {
     params: { query: options },
   });
   if (!response.ok || !data) {
@@ -209,17 +206,16 @@ export async function getMyShares(options: PageOptions = {}) {
   return data;
 }
 
-export async function updateMyShare(
-  shareId: string,
+export async function updateHostedTrace(
+  traceId: string,
   body: {
     visibility?: 'unlisted' | 'listed';
-    published?: boolean;
     password?: string;
     expires_in_days?: number;
   },
 ) {
-  const { data, error, response } = await client.PATCH('/api/shares/{share_id}', {
-    params: { path: { share_id: shareId } },
+  const { data, error, response } = await client.PATCH('/api/traces/{trace_id}', {
+    params: { path: { trace_id: traceId } },
     body,
   });
   if (!response.ok || !data) {
@@ -232,8 +228,21 @@ export async function updateMyShare(
   return data;
 }
 
+export async function stopHostedTraceSharing(traceId: string) {
+  const { error, response } = await client.DELETE('/api/traces/{trace_id}/share', {
+    params: { path: { trace_id: traceId } },
+  });
+  if (!response.ok) {
+    throw new PlatformApiError(
+      errorMessage(error, 'Could not stop sharing this Trace.'),
+      response.status,
+      errorCode(error),
+    );
+  }
+}
+
 export async function getCreditHistory(options: PageOptions = {}) {
-  const { data, error, response } = await client.GET('/api/me/credits/history', {
+  const { data, error, response } = await client.GET('/api/credits/history', {
     params: { query: options },
   });
   if (!response.ok || !data) {
@@ -246,7 +255,7 @@ export async function getCreditHistory(options: PageOptions = {}) {
 }
 
 export async function getBillingPurchases() {
-  const { data, error, response } = await client.GET('/api/me/billing/purchases');
+  const { data, error, response } = await client.GET('/api/billing/purchases');
   if (!response.ok || !data) {
     throw new PlatformApiError(
       errorMessage(error, 'Could not load credit purchases.'),
@@ -257,7 +266,7 @@ export async function getBillingPurchases() {
 }
 
 export async function getBillingPurchase(purchaseId: string) {
-  const { data, error, response } = await client.GET('/api/me/billing/purchases/{purchase_id}', {
+  const { data, error, response } = await client.GET('/api/billing/purchases/{purchase_id}', {
     params: { path: { purchase_id: purchaseId } },
   });
   if (!response.ok || !data) {
@@ -270,7 +279,7 @@ export async function getBillingPurchase(purchaseId: string) {
 }
 
 export async function createCheckoutSession(quantityGb: number, idempotencyKey: string) {
-  const { data, error, response } = await client.POST('/api/me/billing/checkout-sessions', {
+  const { data, error, response } = await client.POST('/api/billing/checkout-sessions', {
     body: { quantity_gb: quantityGb, idempotency_key: idempotencyKey },
   });
   if (!response.ok || !data) {
@@ -287,7 +296,7 @@ export async function createSubscriptionCheckoutSession(
   idempotencyKey: string,
 ) {
   const { data, error, response } = await client.POST(
-    '/api/me/billing/subscription-checkout-sessions',
+    '/api/billing/subscription-checkout-sessions',
     {
       body: { plan, idempotency_key: idempotencyKey },
     },
@@ -302,7 +311,7 @@ export async function createSubscriptionCheckoutSession(
 }
 
 export async function createBillingPortalSession() {
-  const { data, error, response } = await client.POST('/api/me/billing/portal-sessions');
+  const { data, error, response } = await client.POST('/api/billing/portal-sessions');
   if (!response.ok || !data) {
     throw new PlatformApiError(
       errorMessage(error, 'Could not open subscription management.'),
@@ -312,9 +321,9 @@ export async function createBillingPortalSession() {
   return data;
 }
 
-export async function revokeCliSession(sessionId: string) {
-  const { error, response } = await client.DELETE('/api/cli/sessions/{session_id}', {
-    params: { path: { session_id: sessionId } },
+export async function revokeDevice(sessionId: string) {
+  const { error, response } = await client.DELETE('/api/devices/{device_id}', {
+    params: { path: { device_id: sessionId } },
   });
   if (!response.ok) {
     throw new PlatformApiError(
@@ -324,11 +333,14 @@ export async function revokeCliSession(sessionId: string) {
   }
 }
 
-export async function getCliApproval(requestId: string, approvalSecret: string) {
+export async function getDeviceAuthorizationApproval(requestId: string, approvalSecret: string) {
   const { data, error, response } = await client.GET(
-    '/api/cli/authorizations/{request_id}/approval',
+    '/api/device-authorizations/{request_id}/approval',
     {
-      params: { path: { request_id: requestId }, query: { approval_secret: approvalSecret } },
+      params: {
+        path: { request_id: requestId },
+        header: { 'X-Notary-Approval-Secret': approvalSecret },
+      },
     },
   );
   if (!response.ok || !data) {
@@ -340,10 +352,16 @@ export async function getCliApproval(requestId: string, approvalSecret: string) 
   return data;
 }
 
-export async function approveCli(requestId: string, approvalSecret: string) {
-  const { error, response } = await client.POST('/api/cli/authorizations/{request_id}/approval', {
-    params: { path: { request_id: requestId }, query: { approval_secret: approvalSecret } },
-  });
+export async function approveDeviceAuthorization(requestId: string, approvalSecret: string) {
+  const { error, response } = await client.POST(
+    '/api/device-authorizations/{request_id}/approval',
+    {
+      params: {
+        path: { request_id: requestId },
+        header: { 'X-Notary-Approval-Secret': approvalSecret },
+      },
+    },
+  );
   if (!response.ok) {
     throw new PlatformApiError(
       errorMessage(error, 'Could not approve this local service request.'),
@@ -353,7 +371,7 @@ export async function approveCli(requestId: string, approvalSecret: string) {
 }
 
 export async function getCurrentUser() {
-  const { data, error, response } = await client.GET('/api/me');
+  const { data, error, response } = await client.GET('/api/account');
   if (response.status === 401) return null;
   if (!response.ok || !data) {
     throw new PlatformApiError(
@@ -361,12 +379,17 @@ export async function getCurrentUser() {
       response.status,
     );
   }
+  const usage = await client.GET('/api/usage');
+  if (!usage.response.ok || !usage.data) {
+    throw new PlatformApiError(
+      errorMessage(usage.error, 'Could not load account usage.'),
+      usage.response.status,
+    );
+  }
   return {
     ...data.account,
     billing: data.billing,
-    credits: data.credits,
-    notary_stats: data.notary_stats,
-    share_stats: data.share_stats,
+    usage: usage.data,
   };
 }
 
@@ -382,7 +405,7 @@ export async function getAuthProviders() {
 }
 
 export async function getCreditOffers() {
-  const { data, error, response } = await client.GET('/api/me/credit-offers');
+  const { data, error, response } = await client.GET('/api/credit-offers');
   if (!response.ok || !data) {
     throw new PlatformApiError(
       errorMessage(error, 'Could not load available credit offers.'),
@@ -393,7 +416,7 @@ export async function getCreditOffers() {
 }
 
 export async function claimCreditOffer(offerId: string) {
-  const { data, error, response } = await client.POST('/api/me/credit-offers/{offer_id}/claim', {
+  const { data, error, response } = await client.POST('/api/credit-offers/{offer_id}/claim', {
     params: { path: { offer_id: offerId } },
   });
   if (!response.ok || !data) {
@@ -416,7 +439,9 @@ export async function logoutBrowser() {
 }
 
 export async function deleteCurrentAccount() {
-  const { error, response } = await client.DELETE('/api/me');
+  const { error, response } = await client.DELETE('/api/account', {
+    body: { confirmation: 'DELETE' },
+  });
   if (!response.ok) {
     throw new PlatformApiError(
       errorMessage(error, 'Could not delete the account.'),

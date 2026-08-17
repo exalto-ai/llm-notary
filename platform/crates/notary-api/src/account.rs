@@ -3,6 +3,7 @@
 use super::*;
 use crate::auth::authenticated_web_user;
 use crate::browser_auth::BrowserAuthProvider;
+use serde::Deserialize;
 
 #[derive(Serialize, ToSchema)]
 pub(super) struct PublicUser {
@@ -14,12 +15,25 @@ pub(super) struct PublicUser {
 }
 
 #[derive(Serialize, ToSchema)]
-pub(super) struct MeResponse {
+pub(super) struct AccountResponse {
     pub(super) account: PublicUser,
     billing: AccountBillingResponse,
+    links: AccountLinks,
+}
+
+#[derive(Serialize, ToSchema)]
+struct AccountLinks {
+    usage: &'static str,
+    billing: &'static str,
+    devices: &'static str,
+    api_keys: &'static str,
+}
+
+#[derive(Serialize, ToSchema)]
+struct UsageResponse {
     credits: credits::CreditSummary,
-    notary_stats: NotaryStats,
-    share_stats: ShareStats,
+    operations: NotaryStats,
+    hosted_traces: HostedTraceUsage,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, ToSchema)]
@@ -49,11 +63,18 @@ impl AccountBillingResponse {
 }
 
 #[derive(Serialize, ToSchema)]
-struct ShareStats {
+struct HostedTraceUsage {
     total: i64,
-    admitted: i64,
-    in_progress: i64,
+    shared: i64,
+    verifying: i64,
     stored_bytes: i64,
+}
+
+#[derive(Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub(super) struct DeleteAccountRequest {
+    /// Must be exactly `DELETE` after the user confirms local traces remain local.
+    pub(super) confirmation: String,
 }
 
 #[derive(Debug, Eq, PartialEq, Serialize, ToSchema)]
@@ -87,25 +108,27 @@ pub(super) async fn account_notary_stats(
 }
 
 pub(super) fn router() -> OpenApiRouter<NotaryApiState> {
-    OpenApiRouter::new().routes(routes!(me, delete_account))
+    OpenApiRouter::new()
+        .routes(routes!(account, delete_account))
+        .routes(routes!(usage))
 }
 
 #[utoipa::path(
     get,
-    path = "/api/me",
-    summary = "Get the signed-in browser user",
+    path = "/api/account",
+    summary = "Get the current Notary account",
     responses(
-        (status = 200, body = MeResponse),
+        (status = 200, body = AccountResponse),
         (status = 401, body = ErrorResponse),
         (status = 500, body = ErrorResponse)
     ),
     security(("browserSession" = [])),
-    tag = "browser-auth"
+    tag = "account"
 )]
-pub(super) async fn me(
+pub(super) async fn account(
     State(state): State<NotaryApiState>,
     jar: CookieJar,
-) -> ApiResult<Json<MeResponse>> {
+) -> ApiResult<Json<AccountResponse>> {
     let session_token = session_token(&jar)?;
     let now = unix_timestamp()?;
     let user = sqlx::query_as::<_, (String, String, String, Option<String>, String)>(
@@ -128,9 +151,57 @@ pub(super) async fn me(
     .await
     .map_err(database_error)?
     .ok_or_else(ApiError::unauthorized)?;
-    let credits = credits::account_access(&state, &user.0).await?;
     let billing = credits::account_billing_state(&state.database, &user.0).await?;
-    let notary_stats = account_notary_stats(&state.database, &user.0).await?;
+    Ok(Json(AccountResponse {
+        account: PublicUser {
+            id: user.0,
+            provider_display_name: user.2,
+            avatar_url: user.3,
+            auth_provider: BrowserAuthProvider::from_database(&user.4)?,
+            display_name: user.1,
+        },
+        billing: AccountBillingResponse::new(
+            billing,
+            state.billing.purchase_mode(),
+            state.billing.subscriptions_configured(),
+            &state.admission,
+        ),
+        links: AccountLinks {
+            usage: "/api/usage",
+            billing: "/api/billing/purchases",
+            devices: "/api/devices",
+            api_keys: "/api/api-keys",
+        },
+    }))
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/usage",
+    summary = "Get capture, notarization, and hosted Trace usage",
+    responses(
+        (status = 200, body = UsageResponse),
+        (status = 401, body = ErrorResponse),
+        (status = 403, body = ErrorResponse),
+        (status = 500, body = ErrorResponse)
+    ),
+    security(("browserSession" = []), ("bearerAuth" = ["account:read"])),
+    tag = "account"
+)]
+async fn usage(
+    State(state): State<NotaryApiState>,
+    headers: HeaderMap,
+    jar: CookieJar,
+) -> ApiResult<Json<UsageResponse>> {
+    let account_id = if headers.contains_key(header::AUTHORIZATION) {
+        auth::authenticated_principal(&state, &headers, auth::ApiScope::AccountRead)
+            .await?
+            .account_id
+    } else {
+        authenticated_web_user(&state, &jar).await?.0
+    };
+    let credits = credits::account_access(&state, &account_id).await?;
+    let operations = account_notary_stats(&state.database, &account_id).await?;
     let (total, admitted, in_progress, stored_bytes) = sqlx::query_as::<_, (i64, i64, i64, i64)>(
         "SELECT COUNT(*)::BIGINT,
                 COUNT(*) FILTER (WHERE status IN ('shared', 'stopped'))::BIGINT,
@@ -146,30 +217,17 @@ pub(super) async fn me(
                 ), 0)::BIGINT
          FROM traces WHERE account_id = $1",
     )
-    .bind(&user.0)
+    .bind(&account_id)
     .fetch_one(&state.database)
     .await
     .map_err(database_error)?;
-    Ok(Json(MeResponse {
-        account: PublicUser {
-            id: user.0,
-            provider_display_name: user.2,
-            avatar_url: user.3,
-            auth_provider: BrowserAuthProvider::from_database(&user.4)?,
-            display_name: user.1,
-        },
-        billing: AccountBillingResponse::new(
-            billing,
-            state.billing.purchase_mode(),
-            state.billing.subscriptions_configured(),
-            &state.admission,
-        ),
+    Ok(Json(UsageResponse {
         credits,
-        notary_stats,
-        share_stats: ShareStats {
+        operations,
+        hosted_traces: HostedTraceUsage {
             total,
-            admitted,
-            in_progress,
+            shared: admitted,
+            verifying: in_progress,
             stored_bytes,
         },
     }))
@@ -177,20 +235,28 @@ pub(super) async fn me(
 
 #[utoipa::path(
     delete,
-    path = "/api/me",
-    summary = "Delete the current account and all associated hosted data",
+    path = "/api/account",
+    summary = "Delete the current Notary account and hosted data",
+    request_body = DeleteAccountRequest,
     responses(
         (status = 204, description = "Account deleted", headers(("Set-Cookie" = String))),
+        (status = 400, body = ErrorResponse),
         (status = 401, body = ErrorResponse),
         (status = 500, body = ErrorResponse)
     ),
     security(("browserSession" = [])),
-    tag = "browser-auth"
+    tag = "account"
 )]
 pub(super) async fn delete_account(
     State(state): State<NotaryApiState>,
     jar: CookieJar,
+    Json(request): Json<DeleteAccountRequest>,
 ) -> ApiResult<(CookieJar, StatusCode)> {
+    if request.confirmation != "DELETE" {
+        return Err(ApiError::bad_request(
+            "confirmation must be DELETE; local traces on disconnected devices are unaffected",
+        ));
+    }
     let user = authenticated_web_user(&state, &jar).await?;
     let now = unix_timestamp()?;
     let mut transaction = state.database.begin().await.map_err(database_error)?;

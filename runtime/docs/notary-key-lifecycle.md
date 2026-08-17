@@ -1,6 +1,6 @@
 # Notary key lifecycle
 
-`GET /api/notary` publishes a versioned Registry of notary endpoints and secp256k1
+`GET /api/registry` publishes the official Registry of notary endpoints and secp256k1
 verification keys. The public origin authenticates the response with HTTPS;
 the JSON document is not separately signed. Clients cache successful responses
 so existing evidence remains verifiable when a deployment changes keys.
@@ -14,11 +14,13 @@ so existing evidence remains verifiable when a deployment changes keys.
   "active_key_id": "sha256:...",
   "notaries": [
     {
+      "name": "Alice",
+      "operator": "Exalto",
       "host": "203.0.113.10",
       "port": 7047,
       "transport": "tcp",
       "key_id": "sha256:...",
-      "public_key": "02...",
+      "verification_key": "02...",
       "status": "active",
       "valid_from_unix_ms": 0,
       "valid_until_unix_ms": null,

@@ -1625,7 +1625,6 @@ async fn put_trace_share(
         let status = sharing::update_share_settings(
             &existing.hosted_trace_id,
             Some(body.visibility.into()),
-            Some(true),
             body.password.as_ref().map(SecretInput::expose),
             body.expires_in_days,
         )
@@ -1641,6 +1640,8 @@ async fn put_trace_share(
             state.config.notary.public_key.as_deref(),
             shared_trust.as_ref(),
             body.visibility.into(),
+            body.password.as_ref().map(SecretInput::expose),
+            body.expires_in_days,
             body.force,
         )
         .await
@@ -1655,7 +1656,7 @@ async fn put_trace_share(
             share_url: share.share_url,
             package_url: share.package_url,
             visibility: share.visibility,
-            published: share.published,
+            access_enabled: share.access_enabled,
             password_protected: share.password_protected,
             expires_at: share.expires_at,
         };
@@ -1669,20 +1670,7 @@ async fn put_trace_share(
             .put_trace_share(initial_record.clone())
             .await
             .map_err(|_| ApiError::internal("metadata_update_failed"))?;
-        if body.password.is_some() || body.expires_in_days.is_some() {
-            let status = sharing::update_share_settings(
-                &initial_record.hosted_trace_id,
-                Some(body.visibility.into()),
-                Some(true),
-                body.password.as_ref().map(SecretInput::expose),
-                body.expires_in_days,
-            )
-            .await
-            .map_err(share_status_api_error)?;
-            trace_share_record_from_status(trace_id.clone(), status)?
-        } else {
-            initial_record
-        }
+        initial_record
     };
     state
         .persistence
@@ -1717,9 +1705,7 @@ async fn delete_trace_share(
         return Ok(StatusCode::NO_CONTENT);
     };
     let _credentials = state.account_credentials.lock().await;
-    match sharing::update_share_settings(&stored.hosted_trace_id, None, Some(false), None, None)
-        .await
-    {
+    match sharing::stop_sharing(&stored.hosted_trace_id).await {
         Ok(_) | Err(sharing::ShareStatusError::NotFound) => {}
         Err(error) => return Err(share_status_api_error(error)),
     }
@@ -1768,9 +1754,9 @@ fn trace_share_record_from_status(
     Ok(TraceShareRecord {
         trace_id,
         hosted_trace_id: status.hosted_trace_id,
-        progress: ShareProgress::from_hosted(&status.state).as_str().into(),
+        progress: ShareProgress::from_hosted(status.state).as_str().into(),
         visibility: status.visibility.as_str().into(),
-        access_enabled: status.published,
+        access_enabled: status.access_enabled,
         password_protected: status.password_protected,
         expires_at_unix_ms: match status.expires_at {
             Some(value) => Some(
@@ -2944,14 +2930,14 @@ enum ShareProgress {
 }
 
 impl ShareProgress {
-    fn from_hosted(value: &str) -> Self {
+    fn from_hosted(value: sharing::HostedTraceStatus) -> Self {
+        use sharing::HostedTraceStatus;
+
         match value {
-            "preparing" | "queued" => Self::Preparing,
-            "uploading" => Self::Uploading,
-            "verifying" => Self::Verifying,
-            "admitted" | "shared" => Self::Shared,
-            "rejected" => Self::Rejected,
-            _ => Self::Failed,
+            HostedTraceStatus::Verifying => Self::Verifying,
+            HostedTraceStatus::Shared | HostedTraceStatus::Stopped => Self::Shared,
+            HostedTraceStatus::Rejected => Self::Rejected,
+            HostedTraceStatus::Failed => Self::Failed,
         }
     }
 
@@ -2985,7 +2971,14 @@ impl TraceShare {
     fn from_record(record: TraceShareRecord) -> Self {
         Self {
             trace_id: record.trace_id,
-            progress: ShareProgress::from_hosted(&record.progress),
+            progress: match record.progress.as_str() {
+                "preparing" => ShareProgress::Preparing,
+                "uploading" => ShareProgress::Uploading,
+                "verifying" => ShareProgress::Verifying,
+                "shared" => ShareProgress::Shared,
+                "rejected" => ShareProgress::Rejected,
+                _ => ShareProgress::Failed,
+            },
             visibility: if record.visibility == "listed" {
                 ShareVisibility::Listed
             } else {
@@ -3264,16 +3257,14 @@ mod tests {
 
     #[test]
     fn hosted_share_states_map_to_the_bounded_product_progress() {
+        use sharing::HostedTraceStatus;
+
         for (hosted, expected) in [
-            ("preparing", "preparing"),
-            ("queued", "preparing"),
-            ("uploading", "uploading"),
-            ("verifying", "verifying"),
-            ("admitted", "shared"),
-            ("shared", "shared"),
-            ("rejected", "rejected"),
-            ("failed", "failed"),
-            ("future_state", "failed"),
+            (HostedTraceStatus::Verifying, "verifying"),
+            (HostedTraceStatus::Shared, "shared"),
+            (HostedTraceStatus::Stopped, "shared"),
+            (HostedTraceStatus::Rejected, "rejected"),
+            (HostedTraceStatus::Failed, "failed"),
         ] {
             assert_eq!(ShareProgress::from_hosted(hosted).as_str(), expected);
         }
@@ -3808,7 +3799,7 @@ mod tests {
         let retired = notary_record(3, NotaryKeyStatus::Retired, 80);
         let revoked = notary_record(4, NotaryKeyStatus::Revoked, 110);
         let response = registry_notaries_response(registry_service::PinnedRegistryState {
-            registry_source: Some("https://example.test/api/notary".into()),
+            registry_source: Some("https://example.test/api/registry".into()),
             generation: 7,
             active_key_id: active.key_id.clone(),
             records: vec![

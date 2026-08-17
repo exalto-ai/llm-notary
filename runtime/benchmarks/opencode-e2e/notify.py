@@ -31,7 +31,7 @@ def fallback_result() -> dict[str, Any]:
         "failure_code": "result_missing",
         "model": {"requested_openrouter_model": "unknown"},
         "summary": {},
-        "publications": [],
+        "shares": [],
         "total_wall_ms": 0,
     }
 
@@ -82,9 +82,10 @@ def slack_payload(result: dict[str, Any]) -> dict[str, Any]:
         {
             "type": "mrkdwn",
             "text": (
-                "*Agent / proof / total*\n"
+                "*Agent / proof / share / total*\n"
                 f"{duration(summary.get('opencode_wall_ms'))} / "
                 f"{duration(summary.get('proof_wall_ms'))} / "
+                f"{duration(summary.get('share_wall_ms'))} / "
                 f"{duration(result.get('total_wall_ms'))}"
             ),
         },
@@ -110,7 +111,7 @@ def slack_payload(result: dict[str, Any]) -> dict[str, Any]:
         )
     links = [
         f"<{item['share_url']}|{item['trace_id']}>"
-        for item in result.get("publications", [])[:10]
+        for item in result.get("shares", [])[:10]
         if isinstance(item, dict)
         and isinstance(item.get("share_url"), str)
         and isinstance(item.get("trace_id"), str)

@@ -19,7 +19,7 @@ use crate::{
     },
 };
 
-use super::public::purge_expired_share_rate_limits;
+use super::public::purge_expired_trace_rate_limits;
 
 const CLAIM_TIMEOUT_SECS: i64 = 15 * 60;
 const LISTING_PREVIEW_CHARS: usize = 180;
@@ -142,8 +142,8 @@ pub(crate) async fn run_worker(state: NotaryApiState, mut shutdown: watch::Recei
             tracing::error!(%error, "updating Trace verification metrics failed");
         }
         if Instant::now() >= next_rate_limit_cleanup {
-            if let Err(error) = purge_expired_share_rate_limits(&state).await {
-                tracing::error!(%error, "purging expired share rate limits failed");
+            if let Err(error) = purge_expired_trace_rate_limits(&state).await {
+                tracing::error!(%error, "purging expired Trace rate limits failed");
             }
             next_rate_limit_cleanup =
                 Instant::now() + Duration::from_secs(RATE_LIMIT_CLEANUP_INTERVAL_SECS);
@@ -490,7 +490,7 @@ async fn admit_claim(
     if artifacts.verified.package_sha256 != admitted_package_sha256 {
         bail!("verified package hash changed before admission");
     }
-    let stored = store_committed_artifacts(state, &job.trace_id, &artifacts).await?;
+    let stored = store_committed_artifacts(state, &job.trace_id, claim, &artifacts).await?;
     let now = unix_timestamp().map_err(|error| anyhow::anyhow!(error.message))?;
     let update = sqlx::query(
         "UPDATE traces
@@ -620,6 +620,7 @@ async fn load_existing_public_artifacts(
 async fn store_committed_artifacts(
     state: &NotaryApiState,
     trace_id: &str,
+    verification_claim: &str,
     artifacts: &VerifiedArtifacts,
 ) -> Result<StoredPublicArtifacts> {
     let content_sha256 = sha256_hex(&artifacts.verified.trace);
@@ -632,6 +633,7 @@ async fn store_committed_artifacts(
     let stored = StoredPublicArtifacts {
         content_object_key: state.traces.storage.committed_artifact_key(
             trace_id,
+            verification_claim,
             "content",
             &content_sha256,
         )?,
@@ -639,12 +641,23 @@ async fn store_committed_artifacts(
         content_sha256,
         package_object_key: state.traces.storage.committed_artifact_key(
             trace_id,
+            verification_claim,
             "package",
             &package_sha256,
         )?,
         package_size_bytes: artifacts.archive.len().try_into()?,
         package_sha256,
     };
+    let now = unix_timestamp().map_err(|error| anyhow::anyhow!(error.message))?;
+    for (object_key, artifact_kind) in [
+        (&stored.content_object_key, "content"),
+        (&stored.package_object_key, "package"),
+    ] {
+        // The intent is durable before either public write. A process death at
+        // any later instruction therefore leaves a discoverable object, while
+        // the claim-scoped key prevents an old intent from targeting a retry.
+        enqueue_cleanup_direct(state, trace_id, object_key, artifact_kind, now).await?;
+    }
     let result = async {
         write_public_artifact(
             state,
@@ -987,6 +1000,161 @@ mod tests {
                 (stored.package_object_key, "package".to_owned(), 1),
             ]
         );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Docker and a disposable PostgreSQL container"]
+    async fn failed_cleanup_from_an_old_claim_cannot_delete_retried_artifacts() {
+        let database = crate::fresh_database().await;
+        let storage = MockTraceStorage::new();
+        let state = NotaryApiState {
+            database: database.pool.clone(),
+            _test_database: Some(database),
+            http: reqwest::Client::new(),
+            github_client_id: String::new(),
+            github_client_secret: String::new(),
+            github_callback_url: Url::parse("https://example.test/auth/github").unwrap(),
+            google_client_id: String::new(),
+            google_client_secret: String::new(),
+            google_callback_url: Url::parse("https://example.test/auth/google").unwrap(),
+            public_origin: Url::parse("https://example.test").unwrap(),
+            secure_cookies: true,
+            registry: crate::tests::test_registry(),
+            traces: TraceService::mock(storage.clone()),
+            admission: std::sync::Arc::new(crate::config::NotaryAdmissionConfig::for_test()),
+            billing: crate::billing::BillingService::disabled_for_test(),
+        };
+        let sha256 = "d".repeat(64);
+        let failed_key = state
+            .traces
+            .storage
+            .committed_artifact_key("trc-retry", "claim-failed", "package", &sha256)
+            .unwrap();
+        let retried_key = state
+            .traces
+            .storage
+            .committed_artifact_key("trc-retry", "claim-retried", "package", &sha256)
+            .unwrap();
+        storage.object_bytes(&failed_key, b"first attempt".to_vec());
+        storage.fail_delete(&failed_key);
+        enqueue_cleanup_direct(&state, "trc-retry", &failed_key, "package", 1)
+            .await
+            .unwrap();
+        assert!(!cleanup_object(&state, &failed_key).await.unwrap());
+
+        storage.object_bytes(&retried_key, b"successful retry".to_vec());
+        storage.delete_failures.lock().unwrap().remove(&failed_key);
+        crate::traces::owner::cleanup_storage_objects(&state)
+            .await
+            .unwrap();
+
+        assert!(!storage.objects.lock().unwrap().contains_key(&failed_key));
+        assert_eq!(
+            storage.bodies.lock().unwrap().get(&retried_key).cloned(),
+            Some(b"successful retry".to_vec())
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Docker and a disposable PostgreSQL container"]
+    async fn durable_cleanup_intent_defers_active_claims_and_preserves_admitted_objects() {
+        let database = crate::fresh_database().await;
+        crate::insert_test_github_user(&database.pool, "intent-user", 1, "publisher").await;
+        let storage = MockTraceStorage::new();
+        let state = NotaryApiState {
+            database: database.pool.clone(),
+            _test_database: Some(database),
+            http: reqwest::Client::new(),
+            github_client_id: String::new(),
+            github_client_secret: String::new(),
+            github_callback_url: Url::parse("https://example.test/auth/github").unwrap(),
+            google_client_id: String::new(),
+            google_client_secret: String::new(),
+            google_callback_url: Url::parse("https://example.test/auth/google").unwrap(),
+            public_origin: Url::parse("https://example.test").unwrap(),
+            secure_cookies: true,
+            registry: crate::tests::test_registry(),
+            traces: TraceService::mock(storage.clone()),
+            admission: std::sync::Arc::new(crate::config::NotaryAdmissionConfig::for_test()),
+            billing: crate::billing::BillingService::disabled_for_test(),
+        };
+        let package = b"published package".to_vec();
+        let content = b"published content".to_vec();
+        let package_sha256 = sha256_hex(&package);
+        let content_sha256 = sha256_hex(&content);
+        let package_key = state
+            .traces
+            .storage
+            .committed_artifact_key("trc-intent", "claim-active", "package", &package_sha256)
+            .unwrap();
+        let content_key = state
+            .traces
+            .storage
+            .committed_artifact_key("trc-intent", "claim-active", "content", &content_sha256)
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO traces
+             (trace_id, account_id, source_trace_id, idempotency_key, status, visibility,
+              package_format, declared_package_size_bytes, declared_package_sha256,
+              staging_object_key, committed_staging_object_key, upload_expires_at,
+              created_at, updated_at, verification_claim, verification_started_at)
+             VALUES
+             ('trc-intent', 'intent-user', 'trc-source-intent', 'idem-intent-0001',
+              'verifying', 'unlisted', $1, $2, $3, 'staging-intent',
+              'committed-staging-intent', 100, 1, 1, 'claim-active', 1)",
+        )
+        .bind(crate::traces::storage::PACKAGE_FORMAT)
+        .bind(package.len() as i64)
+        .bind(&package_sha256)
+        .execute(&state.database)
+        .await
+        .unwrap();
+        for (key, kind, bytes) in [
+            (&content_key, "content", content.clone()),
+            (&package_key, "package", package.clone()),
+        ] {
+            enqueue_cleanup_direct(&state, "trc-intent", key, kind, 1)
+                .await
+                .unwrap();
+            storage.object_bytes(key, bytes);
+            assert!(!cleanup_object(&state, key).await.unwrap());
+        }
+
+        sqlx::query(
+            "UPDATE traces SET status = 'shared', verified_at = 2,
+              admitted_package_size_bytes = $1, admitted_package_sha256 = $2,
+              package_object_key = $3, package_size_bytes = $1, package_sha256 = $2,
+              content_object_key = $4, content_size_bytes = $5, content_sha256 = $6,
+              disclosure_safety_version = $7, verification_claim = NULL
+             WHERE trace_id = 'trc-intent'",
+        )
+        .bind(package.len() as i64)
+        .bind(&package_sha256)
+        .bind(&package_key)
+        .bind(&content_key)
+        .bind(content.len() as i64)
+        .bind(&content_sha256)
+        .bind(PUBLIC_PACKAGE_SAFETY_VERSION)
+        .execute(&state.database)
+        .await
+        .unwrap();
+        crate::traces::owner::cleanup_storage_objects(&state)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            storage.bodies.lock().unwrap().get(&package_key),
+            Some(&package)
+        );
+        assert_eq!(
+            storage.bodies.lock().unwrap().get(&content_key),
+            Some(&content)
+        );
+        let queued: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM storage_cleanup_queue")
+            .fetch_one(&state.database)
+            .await
+            .unwrap();
+        assert_eq!(queued, 0);
     }
 
     #[test]

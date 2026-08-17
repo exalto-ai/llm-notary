@@ -110,7 +110,7 @@ normalizes the authenticated provider exchange, and writes the deterministic
 
 ## Trust anchors and key discovery
 
-Hosted clients fetch `GET /api/notary` from the configured public origin over
+Hosted clients fetch `GET /api/registry` from the configured public origin over
 authenticated HTTPS. The response is a versioned lifecycle directory; it is
 not itself cryptographically signed. Clients defend against accidental or
 stale changes by caching accepted generations, rejecting rollback or a

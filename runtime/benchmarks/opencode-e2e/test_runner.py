@@ -175,7 +175,7 @@ class NotificationTests(unittest.TestCase):
                     "proof_wall_ms": 2300,
                 },
                 "total_wall_ms": 5000,
-                "publications": [
+                "shares": [
                     {
                         "trace_id": "trc-1",
                         "share_url": "https://example.test/s/share-1",

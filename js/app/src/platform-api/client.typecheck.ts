@@ -8,28 +8,31 @@ async function contractAssertions() {
   await typedClient.GET('/api/unknown');
 
   // @ts-expect-error POST is not registered for the current-user endpoint.
-  await typedClient.POST('/api/me');
+  await typedClient.POST('/api/account');
 
-  // @ts-expect-error Token refresh requires its generated request body.
+  // @ts-expect-error Removed CLI paths must not compile.
   await typedClient.POST('/api/cli/token');
 
-  await typedClient.GET('/api/me/api-keys', { params: { query: { limit: 20 } } });
-  await typedClient.GET('/api/me/credits/history', { params: { query: { cursor: 'opaque' } } });
-  await typedClient.GET('/api/me/billing/purchases');
-  await typedClient.GET('/api/me/billing/purchases/{purchase_id}', {
+  // @ts-expect-error Token refresh requires its generated request body.
+  await typedClient.POST('/api/device-session/token');
+
+  await typedClient.GET('/api/api-keys', { params: { query: { limit: 20 } } });
+  await typedClient.GET('/api/credits/history', { params: { query: { cursor: 'opaque' } } });
+  await typedClient.GET('/api/billing/purchases');
+  await typedClient.GET('/api/billing/purchases/{purchase_id}', {
     params: { path: { purchase_id: 'purchase-id' } },
   });
-  await typedClient.POST('/api/me/billing/checkout-sessions', {
+  await typedClient.POST('/api/billing/checkout-sessions', {
     body: { quantity_gb: 5, idempotency_key: 'checkout-attempt' },
   });
-  await typedClient.POST('/api/me/api-keys', {
-    body: { name: 'CI', scopes: ['capture:request'], expires_at: null },
+  await typedClient.POST('/api/api-keys', {
+    body: { name: 'CI', scopes: ['notarization:request'], expires_at: null },
   });
-  await typedClient.DELETE('/api/me/api-keys/{api_key_id}', {
+  await typedClient.DELETE('/api/api-keys/{api_key_id}', {
     params: { path: { api_key_id: 'key-id' } },
   });
 
-  const { data } = await typedClient.GET('/api/me');
+  const { data } = await typedClient.GET('/api/account');
   if (data) {
     data.account.provider_display_name;
     data.account.display_name;

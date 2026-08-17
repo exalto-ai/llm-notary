@@ -34,7 +34,7 @@ SENSITIVE_ENV_NAME = re.compile(
 )
 DISCLOSURE_RULES = {
     "api_key": re.compile(
-        r"\b(?:sk-(?:or-)?v?\d?[-_A-Za-z0-9]{16,}|llmn_v1_[A-Za-z0-9_]{24,})\b",
+        r"\b(?:sk-(?:or-)?v?\d?[-_A-Za-z0-9]{16,}|(?:llmn_v1_|notary_key_)[A-Za-z0-9_]{24,})\b",
         re.IGNORECASE,
     ),
     "authorization_value": re.compile(
@@ -812,16 +812,16 @@ class Canary:
                 ],
                 env=self.environment,
                 timeout=120,
-                stage="publication",
-                code="publication_failed",
+                stage="sharing",
+                code="share_failed",
             )
             if share.get("trace_id") != trace_id:
-                raise CanaryFailure("publication", "publication_failed")
-            deadline = time.monotonic() + self.arguments.publication_timeout
+                raise CanaryFailure("sharing", "share_failed")
+            deadline = time.monotonic() + self.arguments.share_timeout
             status = share
             while status.get("progress") not in TERMINAL_SHARE_STATES:
                 if time.monotonic() >= deadline:
-                    raise CanaryFailure("publication", "publication_timeout")
+                    raise CanaryFailure("sharing", "share_timeout")
                 time.sleep(2)
                 try:
                     status = http_json(
@@ -831,17 +831,17 @@ class Canary:
                 except urllib.error.HTTPError as error:
                     if error.code == 503:
                         continue
-                    raise CanaryFailure("publication", "publication_failed") from error
+                    raise CanaryFailure("sharing", "share_failed") from error
                 except (OSError, ValueError) as error:
-                    raise CanaryFailure("publication", "publication_failed") from error
+                    raise CanaryFailure("sharing", "share_failed") from error
             if status.get("progress") != "shared":
                 raise CanaryFailure(
-                    "publication", status.get("failure_code") or "publication_failed"
+                    "sharing", status.get("failure_code") or "share_failed"
                 )
             package_url = status.get("package_url")
             share_url = status.get("share_url")
             if not isinstance(package_url, str) or not isinstance(share_url, str):
-                raise CanaryFailure("publication", "publication_failed")
+                raise CanaryFailure("sharing", "share_failed")
             package_path = self.root / "public-downloads" / f"{trace_id}.llmtrace"
             package_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
             try:
@@ -861,12 +861,12 @@ class Canary:
             )
             if public_verified.get("verified") is not True:
                 raise CanaryFailure("public_verification", "public_verify_failed")
-            result["publications"].append(
+            result["shares"].append(
                 {
                     "trace_id": trace_id,
                     "visibility": SHARE_VISIBILITY,
                     "high_entropy_force_requested": True,
-                    "admission_wall_ms": elapsed_ms(submitted_at),
+                    "share_wall_ms": elapsed_ms(submitted_at),
                     "share_url": share_url,
                     "package_url": package_url,
                     "publicly_verified": True,
@@ -910,7 +910,7 @@ def base_result(arguments: argparse.Namespace) -> dict[str, Any]:
         "attempts": [],
         "traces": [],
         "notarizations": [],
-        "publications": [],
+        "shares": [],
         "disclosure_violations": {},
         "total_wall_ms": None,
     }
@@ -935,8 +935,8 @@ def aggregate_result(result: dict[str, Any]) -> None:
         "proof_wall_ms": sum(
             int(item.get("proof_wall_ms") or 0) for item in result["notarizations"]
         ),
-        "admission_wall_ms": sum(
-            int(item.get("admission_wall_ms") or 0) for item in result["publications"]
+        "share_wall_ms": sum(
+            int(item.get("share_wall_ms") or 0) for item in result["shares"]
         ),
     }
 
@@ -961,14 +961,14 @@ def write_step_summary(result: dict[str, Any]) -> None:
         f"- Status: `{result['status']}`",
         f"- Model: `{result['model']['requested_openrouter_model']}`",
         f"- Attempts / traces / eligible: {summary.get('attempt_count', 0)} / {summary.get('model_turns', 0)} / {summary.get('eligible_traces', 0)}",
-        f"- Agent / proof / total: {summary.get('opencode_wall_ms', 0)} ms / {summary.get('proof_wall_ms', 0)} ms / {result.get('total_wall_ms', 0)} ms",
+        f"- Agent / proof / share / total: {summary.get('opencode_wall_ms', 0)} ms / {summary.get('proof_wall_ms', 0)} ms / {summary.get('share_wall_ms', 0)} ms / {result.get('total_wall_ms', 0)} ms",
     ]
     if result.get("failure_code"):
         lines.append(
             f"- Failure: `{result.get('failure_stage')}` / `{result.get('failure_code')}`"
         )
-    for publication in result.get("publications", []):
-        lines.append(f"- [{publication['trace_id']}]({publication['share_url']})")
+    for share in result.get("shares", []):
+        lines.append(f"- [{share['trace_id']}]({share['share_url']})")
     with open(destination, "a", encoding="utf-8") as output:
         output.write("\n".join(lines) + "\n")
 
@@ -989,7 +989,7 @@ def parse_arguments() -> argparse.Namespace:
     )
     parser.add_argument("--agent-timeout", type=int, default=600)
     parser.add_argument("--notarization-timeout", type=int, default=600)
-    parser.add_argument("--publication-timeout", type=int, default=300)
+    parser.add_argument("--share-timeout", type=int, default=300)
     return parser.parse_args()
 
 
