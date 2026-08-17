@@ -242,7 +242,7 @@ fn write_atomic_trace(output_path: &Path, bytes: &[u8]) -> Result<()> {
             drop(file);
             fs::hard_link(&partial, output_path).with_context(|| {
                 format!(
-                    "atomically publishing trace package {}",
+                    "atomically committing trace package {}",
                     output_path.display()
                 )
             })?;

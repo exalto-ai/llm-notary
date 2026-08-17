@@ -86,7 +86,7 @@ impl std::error::Error for PublicPackageSafetyError {}
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub struct PublicPackageSafetyResult {
     pub version: &'static str,
-    /// Whether an explicit publication override accepted at least one
+    /// Whether an explicit sharing override accepted at least one
     /// otherwise unexplained high-entropy value.
     pub high_entropy_override_applied: bool,
 }
@@ -118,7 +118,7 @@ pub fn validate_public_trace_package_with_context(
     validate_public_trace_package_inner(bytes, Some(context), false)
 }
 
-/// Validates an archive while allowing an explicit publisher decision to
+/// Validates an archive while allowing an explicit sharing decision to
 /// override only unexplained high-entropy values.
 ///
 /// Concrete secret patterns, credential fields and headers, signed credential

@@ -1,6 +1,6 @@
 //! Deterministic transport archives for trace package packages.
 //!
-//! This module is shared by the publishing CLI and the admission service. It
+//! This module is shared by Trace sharing clients and the admission service. It
 //! deliberately accepts only the six entries emitted by `notarize`; a transport
 //! archive is not a generic ZIP file.
 
@@ -113,7 +113,7 @@ impl<'a> TracePackageArchiveEntries<'a> {
     }
 }
 
-/// Builds the exact bytes uploaded by `llm-notary publish`.
+/// Builds the exact bytes uploaded when a Trace is shared.
 pub fn build_trace_package_archive(package: &Path) -> Result<Vec<u8>> {
     require_plain_directory(package)?;
     require_exact_package_entries(package)?;
@@ -148,7 +148,7 @@ pub(crate) fn build_trace_package_archive_from_entries(
             .checked_add(bytes.len() as u64)
             .ok_or_else(|| anyhow!("trace package size overflow"))?;
         if total_size > MAX_ARCHIVE_UNCOMPRESSED_BYTES {
-            bail!("trace package exceeds the 128 MiB publication limit");
+            bail!("trace package exceeds the 128 MiB sharing limit");
         }
         file_manifest.push(ArchiveFile {
             path: name.to_owned(),
@@ -306,7 +306,7 @@ pub fn extract_trace_package_archive(
 
 /// Creates a unique staging directory beside an output directory.
 ///
-/// Callers must remove it if writing or publishing fails.
+/// Callers must remove it if writing or sharing fails.
 pub(crate) fn create_staging_directory(output_dir: &Path) -> Result<PathBuf> {
     let parent = output_dir
         .parent()
@@ -571,7 +571,7 @@ fn require_plain_directory(package: &Path) -> Result<()> {
         .extension()
         .is_some_and(|extension| extension == "llmcapture" || extension == "llmbundle")
     {
-        bail!("encrypted capture files cannot be published; notarize the capture first");
+        bail!("encrypted capture files cannot be shared; notarize the capture first");
     }
     let metadata = fs::symlink_metadata(package)
         .with_context(|| format!("reading trace package {}", package.display()))?;
