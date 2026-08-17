@@ -1,6 +1,6 @@
 # Fly.io deployment
 
-The production deployment runs three Fly apps in `sjc`. Two 256 MB shared-CPU
+The production deployment runs three Fly apps in `sjc`. Two 1 GB shared-CPU
 API Machines and one 256 MB shared-CPU web Machine remain running continuously;
 the notary Machine keeps its suspend-on-idle behavior:
 
@@ -148,6 +148,25 @@ outages.
 Operation usage must be acknowledged in PostgreSQL or remain durably queued
 under `/data/usage-outbox`; never print raw admission tickets while performing
 an audit.
+
+## One-time notary-api cutover
+
+Milestone 1 replaces the prototype API configuration and database with one
+clean canonical contract. It is not a rolling migration from the previous
+schema. Before enabling normal deployment, provision the fresh database, stage
+the canonical `NOTARY_API_*` settings and file secrets, and bootstrap a reviewed
+canonical API image on both Machines with `deploy/fly/notary-api.fly.toml`.
+Verify readiness and the admission/redeem/settle path against that image, then
+run `bash deploy/fly/preflight-notary-api.sh`.
+
+The preflight requires two digest-pinned Machines carrying the
+`canonical-v1` deployment marker and at least 1 GB of memory, plus the required
+database, storage, Registry, OAuth, and admission secret names. Normal CI is
+therefore unable to treat a legacy image as its rollback target. Preserve the
+legacy image, configuration, and database separately for an operator-driven
+cutback until the canonical bootstrap is accepted; do not point either image at
+the other schema. Drain legacy admissions and usage outboxes before switching
+traffic so no one-time ticket or settlement crosses the database boundary.
 
 Every hosted protocol connection first carries a short-lived one-time ticket
 obtained from the public API. The notary redeems it through the private

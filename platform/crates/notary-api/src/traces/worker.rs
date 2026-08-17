@@ -507,25 +507,50 @@ async fn admit_claim(
     match update {
         Ok(result) if result.rows_affected() == 1 => {}
         Ok(_) => {
-            let current = load_existing_public_artifacts(state, &job.trace_id)
-                .await
-                .ok()
-                .flatten();
-            if !current
-                .as_ref()
-                .is_some_and(|current| current.matches(&stored))
-            {
-                cleanup_committed_artifacts(state, &job.trace_id, &stored).await?;
-                bail!("share claim was lost before admission");
+            match existing_public_artifacts_match(state, &job.trace_id, &stored).await {
+                Ok(true) => {}
+                Ok(false) => {
+                    cleanup_committed_artifacts(state, &job.trace_id, &stored).await?;
+                    bail!("share claim was lost before admission");
+                }
+                Err(error) => {
+                    // The stored keys may already belong to a concurrently admitted
+                    // Trace. Retain them until database truth can be read again.
+                    return Err(error.context(
+                        "share claim was lost and committed artifacts could not be reconciled",
+                    ));
+                }
             }
         }
         Err(error) => {
-            cleanup_committed_artifacts(state, &job.trace_id, &stored).await?;
-            return Err(error.into());
+            match existing_public_artifacts_match(state, &job.trace_id, &stored).await {
+                Ok(true) => {}
+                Ok(false) => {
+                    cleanup_committed_artifacts(state, &job.trace_id, &stored).await?;
+                    return Err(error.into());
+                }
+                Err(_) => {
+                    // A connection loss can arrive after PostgreSQL committed the
+                    // admission. Deleting while both writes are ambiguous could
+                    // remove the public artifacts referenced by that committed row.
+                    return Err(error.into());
+                }
+            }
         }
     }
     purge_private_object(state, job).await;
     Ok(())
+}
+
+async fn existing_public_artifacts_match(
+    state: &NotaryApiState,
+    trace_id: &str,
+    stored: &StoredPublicArtifacts,
+) -> Result<bool> {
+    Ok(load_existing_public_artifacts(state, trace_id)
+        .await?
+        .as_ref()
+        .is_some_and(|current| current.matches(stored)))
 }
 
 async fn load_existing_public_artifacts(

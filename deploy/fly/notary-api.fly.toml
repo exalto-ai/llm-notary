@@ -14,6 +14,9 @@ kill_timeout = "30s"
   release_command_timeout = "5m"
 
 [env]
+  # A normal rolling deploy is allowed only after the one-time canonical API
+  # bootstrap. The preflight checks this marker on every existing Machine.
+  NOTARY_API_DEPLOYMENT_CONTRACT = "canonical-v1"
   NOTARY_API_LISTEN = "0.0.0.0:8080"
   NOTARY_PUBLIC_ORIGIN = "https://notary.exalto.ai"
   NOTARY_API_REGISTRY_FILE = "/run/secrets/notary_registry"
@@ -87,6 +90,9 @@ kill_timeout = "30s"
   secret_name = "STRIPE_WEBHOOK_SECRET_B64"
 
 [[vm]]
-  memory = "256mb"
+  # Verification isolates an up-to-128 MiB package in a child process while
+  # the API parent retains its request buffer. Leave headroom for decoded ZIP
+  # entries, proof verification, the registry, and ordinary API workers.
+  memory = "1gb"
   cpu_kind = "shared"
   cpus = 1
