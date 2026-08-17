@@ -2654,13 +2654,17 @@ impl TraceSummary {
             duration_ms: value.duration_ms,
             notarization_eligible,
             notarization_ineligibility_code: notarization_ineligibility_code.map(str::to_owned),
-            prompt_preview: (!metadata_only)
-                .then_some(value.prompt_preview)
-                .unwrap_or_default(),
+            prompt_preview: if metadata_only {
+                String::new()
+            } else {
+                value.prompt_preview
+            },
             prompt_preview_truncated: !metadata_only && value.prompt_preview_truncated,
-            output_preview: (!metadata_only)
-                .then_some(value.output_preview)
-                .unwrap_or_default(),
+            output_preview: if metadata_only {
+                String::new()
+            } else {
+                value.output_preview
+            },
             output_preview_truncated: !metadata_only && value.output_preview_truncated,
             failure_code: value.failure_code,
         }
