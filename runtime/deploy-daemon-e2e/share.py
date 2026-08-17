@@ -31,7 +31,7 @@ class Handler(BaseHTTPRequestHandler):
                 }
             )
             return
-        if self.path == "/api/notary":
+        if self.path == "/api/registry":
             self.respond_json(
                 {
                     "format": "notary/registry/v1",
