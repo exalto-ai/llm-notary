@@ -190,7 +190,7 @@ const expectedRequiredFields = {
     'share_id',
     'progress',
     'visibility',
-    'published',
+    'access_enabled',
     'password_protected',
     'updated_at_unix_ms',
   ],
@@ -257,7 +257,7 @@ for (const term of [
   'notary_key_id',
   'trust_source',
   'password_protected',
-  'published',
+  'access_enabled',
 ]) {
   if (!workflowContent.includes(term))
     throw new Error(`Workflow documentation is missing contract term: ${term}`);

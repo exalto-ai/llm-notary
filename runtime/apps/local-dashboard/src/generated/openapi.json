@@ -1656,7 +1656,7 @@
           "local-admin"
         ],
         "summary": "Verify a portable Trace package",
-        "description": "Verifies exactly one bounded .llmtrace body against a request-scoped key override or configured Notary trust. The package is never imported, retained, cataloged, or shared.",
+        "description": "Verifies exactly one bounded .llmtrace body against a request-scoped key override or configured Notary trust. The package is never imported, retained, indexed, or shared.",
         "operationId": "verify_uploaded_trace",
         "parameters": [
           {
@@ -2783,11 +2783,14 @@
           "share_id",
           "progress",
           "visibility",
-          "published",
+          "access_enabled",
           "password_protected",
           "updated_at_unix_ms"
         ],
         "properties": {
+          "access_enabled": {
+            "type": "boolean"
+          },
           "expires_at_unix_ms": {
             "type": [
               "integer",
@@ -2813,9 +2816,6 @@
           },
           "progress": {
             "$ref": "#/components/schemas/ShareProgress"
-          },
-          "published": {
-            "type": "boolean"
           },
           "share_id": {
             "type": "string"

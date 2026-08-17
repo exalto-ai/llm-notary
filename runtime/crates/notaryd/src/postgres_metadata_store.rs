@@ -593,9 +593,9 @@ fn trace_share_from_row(row: &PgRow) -> anyhow::Result<TraceShareRecord> {
     Ok(TraceShareRecord {
         trace_id: row.try_get("trace_id")?,
         share_id: row.try_get("share_id")?,
-        state: row.try_get("state")?,
+        progress: row.try_get("progress")?,
         visibility: row.try_get("visibility")?,
-        published: row.try_get("published")?,
+        access_enabled: row.try_get("access_enabled")?,
         password_protected: row.try_get("password_protected")?,
         expires_at_unix_ms: row_optional_u64(row, "expires_at_unix_ms")?,
         failure_code: row.try_get("failure_code")?,
@@ -1327,7 +1327,7 @@ impl MetadataStore for PostgresMetadataStore {
     async fn trace_share(&self, trace_id: &str) -> MetadataResult<Option<TraceShareRecord>> {
         validate_trace_id(trace_id)?;
         sqlx::query(
-            "SELECT trace_id, share_id, state, visibility, published,
+            "SELECT trace_id, share_id, progress, visibility, access_enabled,
                     password_protected, expires_at_unix_ms, failure_code,
                     share_url, package_url, updated_at_unix_ms
              FROM notaryd.trace_shares WHERE trace_id = $1",
@@ -1351,12 +1351,12 @@ impl MetadataStore for PostgresMetadataStore {
         let updated_at = invalid_i64(share.updated_at_unix_ms, "timestamp_out_of_range")?;
         sqlx::query(
             "INSERT INTO notaryd.trace_shares (
-                trace_id, share_id, state, visibility, published, password_protected,
+                trace_id, share_id, progress, visibility, access_enabled, password_protected,
                 expires_at_unix_ms, failure_code, share_url, package_url, updated_at_unix_ms
              ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
              ON CONFLICT(trace_id) DO UPDATE SET
-                share_id = EXCLUDED.share_id, state = EXCLUDED.state,
-                visibility = EXCLUDED.visibility, published = EXCLUDED.published,
+                share_id = EXCLUDED.share_id, progress = EXCLUDED.progress,
+                visibility = EXCLUDED.visibility, access_enabled = EXCLUDED.access_enabled,
                 password_protected = EXCLUDED.password_protected,
                 expires_at_unix_ms = EXCLUDED.expires_at_unix_ms,
                 failure_code = EXCLUDED.failure_code, share_url = EXCLUDED.share_url,
@@ -1365,9 +1365,9 @@ impl MetadataStore for PostgresMetadataStore {
         )
         .bind(&share.trace_id)
         .bind(&share.share_id)
-        .bind(&share.state)
+        .bind(&share.progress)
         .bind(&share.visibility)
-        .bind(share.published)
+        .bind(share.access_enabled)
         .bind(share.password_protected)
         .bind(expires_at)
         .bind(&share.failure_code)

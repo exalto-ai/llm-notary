@@ -28,7 +28,7 @@ DEFAULT_MODEL = "openrouter/cohere/north-mini-code:free"
 SHARE_VISIBILITY = "listed"
 ALLOWED_FILES = {"retry_after.py"}
 TERMINAL_OPERATION_STATES = {"succeeded", "failed", "interrupted"}
-TERMINAL_SHARE_STATES = {"admitted", "rejected"}
+TERMINAL_SHARE_STATES = {"shared", "rejected", "failed"}
 SENSITIVE_ENV_NAME = re.compile(
     r"(?:KEY|TOKEN|SECRET|PASSWORD|COOKIE|WEBHOOK|CREDENTIAL|AUTH)", re.IGNORECASE
 )
@@ -820,13 +820,13 @@ class Canary:
                 raise CanaryFailure("publication", "publication_failed")
             deadline = time.monotonic() + self.arguments.publication_timeout
             status = share
-            while status.get("state") not in TERMINAL_SHARE_STATES:
+            while status.get("progress") not in TERMINAL_SHARE_STATES:
                 if time.monotonic() >= deadline:
                     raise CanaryFailure("publication", "publication_timeout")
                 time.sleep(2)
                 try:
                     status = http_json(
-                        f"{self.admin_origin}/v1/shares/{urllib.parse.quote(share_id)}",
+                        f"{self.admin_origin}/v1/traces/{urllib.parse.quote(trace_id)}/share",
                         timeout=15,
                     )
                 except urllib.error.HTTPError as error:
@@ -835,7 +835,7 @@ class Canary:
                     raise CanaryFailure("publication", "publication_failed") from error
                 except (OSError, ValueError) as error:
                     raise CanaryFailure("publication", "publication_failed") from error
-            if status.get("state") != "admitted":
+            if status.get("progress") != "shared":
                 raise CanaryFailure(
                     "publication", status.get("failure_code") or "publication_failed"
                 )

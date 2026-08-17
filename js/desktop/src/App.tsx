@@ -310,7 +310,7 @@ function updateChipLabel(update: DesktopUpdateState) {
 
 function updateRestartBlockReason(state: DesktopState) {
   if (state.counts.capturing > 0) return 'Finish the active capture before restarting.';
-  if (state.counts.active_operations > 0) return 'Finish the active notarization before restarting.';
+  if (state.counts.notarizing > 0) return 'Finish the active notarization before restarting.';
   if (state.running && !state.managed_by_desktop) return 'Stop or update the separately managed local service first.';
   return null;
 }
@@ -516,8 +516,8 @@ function Sidebar({ state, view, onNavigate }: { state: DesktopState; view: View;
   const groups: Array<Array<{ view: View; label: string; icon: typeof Gauge; count?: number }>> = [
     [
       { view: 'home', label: 'Home', icon: Gauge },
-      { view: 'captures', label: 'Captures', icon: Archive, count: state.counts.ready_to_notarize },
-      { view: 'notarizations', label: 'Notarizations', icon: ListChecks, count: state.counts.active_operations },
+      { view: 'captures', label: 'Captures', icon: Archive, count: state.counts.captured },
+      { view: 'notarizations', label: 'Notarizations', icon: ListChecks, count: state.counts.notarizing },
       { view: 'traces', label: 'Notarized traces', icon: FileCheck2 },
     ],
     [
@@ -630,14 +630,14 @@ function HomeView({ state, busy, notice, onNavigate, onStart, onStop, onRestart 
 
     <section className="home-grid">
       <div className="native-card capture-card">
-        <header><div><span className="section-label">Capture workspace</span><h2>Private evidence</h2></div><span>{state.counts.total_traces} total</span></header>
+        <header><div><span className="section-label">Capture workspace</span><h2>Private evidence</h2></div><span>{state.counts.captured + state.counts.notarized + state.counts.capturing + state.counts.capture_failed} total</span></header>
         <div className="capture-counts">
-          <button onClick={() => onNavigate('captures')}><b>{state.counts.ready_to_notarize}</b><span>Ready to notarize</span><ChevronRight size={14} /></button>
+          <button onClick={() => onNavigate('captures')}><b>{state.counts.captured}</b><span>Captured</span><ChevronRight size={14} /></button>
           <button onClick={() => onNavigate('traces')}><b>{state.counts.notarized}</b><span>Notarized traces</span><ChevronRight size={14} /></button>
-          <button onClick={() => onNavigate('activity')}><b>{state.counts.failed}</b><span>Need attention</span><ChevronRight size={14} /></button>
+          <button onClick={() => onNavigate('activity')}><b>{state.counts.needs_attention}</b><span>Need attention</span><ChevronRight size={14} /></button>
         </div>
-        <button className="card-action" onClick={() => onNavigate(state.counts.ready_to_notarize ? 'captures' : 'connections')}>
-          {state.counts.ready_to_notarize ? 'Review private captures' : 'Connect a model client'} <ChevronRight size={15} />
+        <button className="card-action" onClick={() => onNavigate(state.counts.captured ? 'captures' : 'connections')}>
+          {state.counts.captured ? 'Review private captures' : 'Connect a model client'} <ChevronRight size={15} />
         </button>
       </div>
 

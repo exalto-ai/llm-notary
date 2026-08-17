@@ -476,7 +476,7 @@ describe('local evidence dashboard', () => {
           share_id: 'share-fixture',
           progress: 'preparing',
           visibility,
-          published: true,
+          access_enabled: true,
           password_protected: false,
           updated_at_unix_ms: Date.now(),
           share_url: null,

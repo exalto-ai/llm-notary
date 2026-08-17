@@ -1,6 +1,6 @@
 # Local service and REST API
 
-In the default local profile, one `notaryd` process owns the catalog,
+In the default local profile, one `notaryd` process owns the metadata store,
 vault, artifacts, and durable operation state. The short-lived
 `llm-notary` command talks to it through the versioned loopback API.
 `notaryd` owns two different loopback listeners:
@@ -59,13 +59,14 @@ The process logs lifecycle metadata to standard error and exits when it cannot
 bind either listener or safely open its storage. A service manager such as
 systemd, launchd, or the Windows Service Control Manager can supervise this
 same foreground command. Stop it through the manager or with the terminal's
-normal interrupt; do not run a second process against the same catalog.
+normal interrupt; do not run a second process against the same metadata store.
 
 On interrupt or termination, the daemon first closes both listeners to new
 requests. Existing provider response streams are allowed to finish and seal
 their private capture, and the notarization worker stops claiming queued work
 after it finishes the operation it already owns. Queued operations remain in
-the catalog for the next start. The desktop app requests the same drain over
+the metadata store for the next start. The desktop app requests the same drain
+over
 its private child-process pipe. It does not send a kill signal as an update or
 normal stop mechanism.
 
@@ -245,12 +246,12 @@ the exact requirement is a local configuration choice.
 Start with the default flow:
 
 ```bash
-export LLM_NOTARY_ADMIN_ORIGIN=http://127.0.0.1:8788
+export NOTARYD_ADMIN_ORIGIN=http://127.0.0.1:8788
 
-curl --fail-with-body "$LLM_NOTARY_ADMIN_ORIGIN/healthz"
-curl --fail-with-body "$LLM_NOTARY_ADMIN_ORIGIN/readyz"
-curl --fail-with-body "$LLM_NOTARY_ADMIN_ORIGIN/openapi.json" > /tmp/llm-notary-openapi.json
-curl --fail-with-body "$LLM_NOTARY_ADMIN_ORIGIN/v1/status"
+curl --fail-with-body "$NOTARYD_ADMIN_ORIGIN/healthz"
+curl --fail-with-body "$NOTARYD_ADMIN_ORIGIN/readyz"
+curl --fail-with-body "$NOTARYD_ADMIN_ORIGIN/openapi.json" > /tmp/llm-notary-openapi.json
+curl --fail-with-body "$NOTARYD_ADMIN_ORIGIN/v1/status"
 ```
 
 Keep the origin fixed to the configured loopback listener. Do not accept an
@@ -424,11 +425,11 @@ identifier:
 
 ```bash
 curl --fail-with-body \
-  "$LLM_NOTARY_ADMIN_ORIGIN/v1/traces?query=sanitized&provider=openai&limit=20"
+  "$NOTARYD_ADMIN_ORIGIN/v1/traces?query=sanitized&provider=openai&limit=20"
 
 trace_id=trc-example
 curl --fail-with-body \
-  "$LLM_NOTARY_ADMIN_ORIGIN/v1/traces/$trace_id"
+  "$NOTARYD_ADMIN_ORIGIN/v1/traces/$trace_id"
 ```
 
 Inspect only failed/interrupted Traces or error Activity without downloading
@@ -436,13 +437,13 @@ and filtering the entire bounded history in the client:
 
 ```bash
 curl --fail-with-body \
-  "$LLM_NOTARY_ADMIN_ORIGIN/v1/traces?status=notarization_failed&limit=20"
+  "$NOTARYD_ADMIN_ORIGIN/v1/traces?status=notarization_failed&limit=20"
 
 curl --fail-with-body \
-  "$LLM_NOTARY_ADMIN_ORIGIN/v1/activity?severity=error&event_type=notarization_failed&limit=20"
+  "$NOTARYD_ADMIN_ORIGIN/v1/activity?severity=error&event_type=notarization_failed&limit=20"
 ```
 
-The catalog preview is local plaintext. Set `prompt_preview_chars` and
+The searchable preview is local plaintext. Set `prompt_preview_chars` and
 `output_preview_chars` to `0` when even a short searchable preview is not
 appropriate for the machine.
 
@@ -464,7 +465,7 @@ When capture completes with a non-`2xx` provider status, Trace detail sets
 `notarization_eligible` to `false` and reports
 `notarization_ineligibility_code: unsupported_provider_http_status`. Starting
 notarization returns `409` with the same code before any proof work is queued.
-The encrypted bundle remains local and unchanged; retry is not offered because
+The encrypted checkpoint remains local and unchanged; retry is not offered because
 the recorded provider response cannot become successful on a later attempt.
 
 Queue or retry notarization with `POST /v1/traces/{trace_id}/notarizations` and
@@ -474,12 +475,12 @@ save the durable operation identifier from the 202 response. Poll it with
 ```bash
 trace_id=trc-example
 response=$(curl --fail-with-body -X POST \
-  "$LLM_NOTARY_ADMIN_ORIGIN/v1/traces/$trace_id/notarizations")
+  "$NOTARYD_ADMIN_ORIGIN/v1/traces/$trace_id/notarizations")
 operation_id=$(printf '%s' "$response" | jq -r '.operation.operation_id')
 printf 'Queued operation %s\n' "$operation_id"
 
 curl --fail-with-body \
-  "$LLM_NOTARY_ADMIN_ORIGIN/v1/operations/$operation_id"
+  "$NOTARYD_ADMIN_ORIGIN/v1/operations/$operation_id"
 ```
 
 If the same Trace is submitted while active work already exists, the service
@@ -505,7 +506,7 @@ posting the owning Trace action again:
 
 ```bash
 curl --fail-with-body -X POST \
-  "$LLM_NOTARY_ADMIN_ORIGIN/v1/traces/$trace_id/notarizations"
+  "$NOTARYD_ADMIN_ORIGIN/v1/traces/$trace_id/notarizations"
 ```
 
 Trace detail includes the current technical `notarization` with `retryable` and
@@ -525,19 +526,19 @@ TLSNotary evidence, disclosed HTTP artifacts, manifest, archive manifest, and
 canonical OpenTelemetry JSON. Every HTTP header value is hidden except the
 exact structural value `Transfer-Encoding: chunked`; the authenticated request
 and response bodies remain disclosed. Download its exact bytes or verify it
-through the capture identifier:
+through the Trace identifier:
 
 ```bash
 trace_id=trc-example
 curl --fail-with-body --output "$trace_id.llmtrace" \
-  "$LLM_NOTARY_ADMIN_ORIGIN/v1/traces/$trace_id/package.llmtrace"
+  "$NOTARYD_ADMIN_ORIGIN/v1/traces/$trace_id/package.llmtrace"
 
 curl --fail-with-body -X POST \
-  "$LLM_NOTARY_ADMIN_ORIGIN/v1/traces/$trace_id/verify"
+  "$NOTARYD_ADMIN_ORIGIN/v1/traces/$trace_id/verify"
 ```
 
 `POST /v1/verify` accepts one bounded portable `.llmtrace` body for in-memory
-verification without importing, retaining, cataloging, or sharing it. It
+verification without importing, retaining, indexing, or sharing it. It
 returns `outcome: passed`, `failed`, or `unsupported`; failures are results,
 not competing Trace states. The thin CLI uses this loopback route for
 path-based verification.
@@ -566,13 +567,13 @@ the exact notarized package and applies the same versioned public-disclosure
 safety policy used by hosted admission. The hosted worker repeats both checks;
 local acceptance never guarantees admission by a newer server policy.
 An explicit `force: true` request, exposed by `llm-notary share --force`, accepts
-only unexplained high-entropy values after the publisher reviews the complete
+only unexplained high-entropy values after the user reviews the complete
 disclosure. It cannot override known secret patterns, credential fields,
 disclosed header values, signed credential queries, invalid archives, or failed
 cryptographic verification.
 After submission, poll `GET /v1/traces/{trace_id}/share` on the local admin
 listener. Progress is `preparing`, `uploading`, `verifying`, `shared`,
-`rejected`, or `failed`. The safe response includes `published`, visibility,
+`rejected`, or `failed`. The safe response includes `access_enabled`, visibility,
 expiry, and access URLs but never an intake or presigned upload URL. The service
 uses the vault-held account credential
 to fetch admission state; agents and the dashboard never receive that
@@ -587,7 +588,7 @@ changing the local Notarized Trace; repeated deletion is safe.
 ## Local trust boundary
 
 The API is intentionally identifier-based. It does not accept arbitrary input
-or output paths and does not return decrypted bundle contents, credential
+or output paths and does not return decrypted checkpoint contents, credential
 values, cookies, raw authenticated headers, vault keys, token values, or
 presigned upload URLs. API errors and activity events follow the same rule.
 Foreground startup diagnostics can name a configured local path when that path

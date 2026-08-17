@@ -91,12 +91,12 @@ struct DesktopUpdateView {
 
 #[derive(Debug, Default, Deserialize, Serialize)]
 struct CaptureCounts {
-    total_traces: u64,
-    capturing: u64,
-    ready_to_notarize: u64,
+    captured: u64,
+    notarizing: u64,
     notarized: u64,
-    failed: u64,
-    active_operations: u64,
+    needs_attention: u64,
+    capturing: u64,
+    capture_failed: u64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -483,7 +483,7 @@ fn restart_block_reason(
 ) -> Option<&'static str> {
     if counts.capturing > 0 {
         Some("Wait for the active capture to finish before restarting to update.")
-    } else if counts.active_operations > 0 {
+    } else if counts.notarizing > 0 {
         Some("Wait for the active notarization to finish before restarting to update.")
     } else if running && !managed_by_desktop {
         Some(
@@ -1329,9 +1329,9 @@ mod tests {
         };
         assert!(restart_block_reason(&counts, true, true).is_some());
         counts.capturing = 0;
-        counts.active_operations = 1;
+        counts.notarizing = 1;
         assert!(restart_block_reason(&counts, true, true).is_some());
-        counts.active_operations = 0;
+        counts.notarizing = 0;
         assert!(restart_block_reason(&counts, true, false).is_some());
         assert!(restart_block_reason(&counts, true, true).is_none());
         assert!(restart_block_reason(&counts, false, false).is_none());
@@ -1348,12 +1348,12 @@ mod tests {
             "notary": "Registry",
             "capture_enabled": true,
             "counts": {
-                "total_traces": 14,
-                "capturing": 1,
-                "ready_to_notarize": 3,
+                "captured": 3,
+                "notarizing": 1,
                 "notarized": 8,
-                "failed": 2,
-                "active_operations": 1
+                "needs_attention": 2,
+                "capturing": 1,
+                "capture_failed": 1
             }
         }))
         .unwrap();
@@ -1361,12 +1361,12 @@ mod tests {
         assert_eq!(
             serde_json::to_value(&status.counts).unwrap(),
             serde_json::json!({
-                "total_traces": 14,
-                "capturing": 1,
-                "ready_to_notarize": 3,
+                "captured": 3,
+                "notarizing": 1,
                 "notarized": 8,
-                "failed": 2,
-                "active_operations": 1
+                "needs_attention": 2,
+                "capturing": 1,
+                "capture_failed": 1
             })
         );
     }

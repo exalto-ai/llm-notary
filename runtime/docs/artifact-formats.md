@@ -129,7 +129,7 @@ does not claim that a local runtime executed the tool.
 
 ## Local verification
 
-Verify a cataloged capture through the daemon:
+Verify a retained Notarized Trace through the daemon:
 
 ```bash
 llm-notary traces verify trc-example

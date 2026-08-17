@@ -89,7 +89,7 @@ Find the newest captured OpenAI response whose preview matches "sanitized",
 show me its safe metadata, and ask before starting notarization. If I approve,
 record the returned operation identifier and poll it to a terminal state. When
 notarized, run the documented trace verification operation and report exactly
-what it verifies. Do not access bundle paths or contents, and do not publish.
+what it verifies. Do not access checkpoint paths or contents, and do not share.
 ```
 
 ## Safe shell workflow
@@ -97,10 +97,10 @@ what it verifies. Do not access bundle paths or contents, and do not publish.
 The default loopback configuration needs no credentials:
 
 ```bash
-export LLM_NOTARY_ADMIN_ORIGIN=http://127.0.0.1:8788
+export NOTARYD_ADMIN_ORIGIN=http://127.0.0.1:8788
 
-curl --fail-with-body "$LLM_NOTARY_ADMIN_ORIGIN/healthz"
-curl --fail-with-body "$LLM_NOTARY_ADMIN_ORIGIN/openapi.json" \
+curl --fail-with-body "$NOTARYD_ADMIN_ORIGIN/healthz"
+curl --fail-with-body "$NOTARYD_ADMIN_ORIGIN/openapi.json" \
   > /tmp/llm-notary-openapi.json
 ```
 
@@ -109,12 +109,12 @@ returned by the service:
 
 ```bash
 curl --fail-with-body \
-  "$LLM_NOTARY_ADMIN_ORIGIN/v1/traces?query=sanitized&provider=openai&state=captured&limit=10" \
+  "$NOTARYD_ADMIN_ORIGIN/v1/traces?query=sanitized&provider=openai&state=captured&limit=10" \
   | jq '.items |= map({trace_id, created_at_unix_ms, provider, requested_model, state, status, notarization_eligible, failure_code})'
 
 trace_id=trc-example
 curl --fail-with-body \
-  "$LLM_NOTARY_ADMIN_ORIGIN/v1/traces/$trace_id" \
+  "$NOTARYD_ADMIN_ORIGIN/v1/traces/$trace_id" \
   | jq 'del(.prompt_preview, .prompt_preview_truncated, .output_preview, .output_preview_truncated)'
 ```
 
@@ -125,12 +125,12 @@ starting another:
 
 ```bash
 response=$(curl --fail-with-body -X POST \
-  "$LLM_NOTARY_ADMIN_ORIGIN/v1/traces/$trace_id/notarizations")
+  "$NOTARYD_ADMIN_ORIGIN/v1/traces/$trace_id/notarizations")
 operation_id=$(printf '%s' "$response" | jq -r '.operation.operation_id')
 
 while :; do
   operation=$(curl --fail-with-body \
-    "$LLM_NOTARY_ADMIN_ORIGIN/v1/operations/$operation_id") || exit 1
+    "$NOTARYD_ADMIN_ORIGIN/v1/operations/$operation_id") || exit 1
   state=$(printf '%s' "$operation" | jq -r '.state')
   progress=$(printf '%s' "$operation" | jq -r \
     'if .progress.proof then "\(.progress.proof.bytes_completed)/\(.progress.proof.bytes_total) bytes, \(.progress.proof.commitments_completed)/\(.progress.proof.commitments_total) commitments" else .progress.phase end')
@@ -149,18 +149,18 @@ If notarization succeeds, independently verify the notarized trace:
 ```bash
 test "$state" = succeeded || exit 1
 curl --fail-with-body -X POST \
-  "$LLM_NOTARY_ADMIN_ORIGIN/v1/traces/$trace_id/verify"
+  "$NOTARYD_ADMIN_ORIGIN/v1/traces/$trace_id/verify"
 ```
 
-For a portable file that is not cataloged by this daemon, use
+For a portable file that is not retained by this daemon, use
 `llm-notary traces verify ./capture.llmtrace`. The CLI sends those bytes to the
 loopback daemon's in-memory verifier; it reads no `.llmcapture` and writes no
 local state.
 
 Report `outcome`, `verified_at_unix_ms`, `notary_key_id`, and `trust_source`.
-Do not translate a successful bundle read into a verification claim.
+Do not translate a successful checkpoint read into a verification claim.
 
-If the user separately approves public sharing, submit the capture identifier,
+If the user separately approves public sharing, submit the Trace identifier,
 defaulting to Unlisted unless they request Library discovery, and
 follow admission through the local service:
 
@@ -168,11 +168,11 @@ follow admission through the local service:
 share=$(curl --fail-with-body -X PUT \
   -H 'Content-Type: application/json' \
   --data '{"visibility":"unlisted"}' \
-  "$LLM_NOTARY_ADMIN_ORIGIN/v1/traces/$trace_id/share")
+  "$NOTARYD_ADMIN_ORIGIN/v1/traces/$trace_id/share")
 share_id=$(printf '%s' "$share" | jq -r '.share_id')
 
 curl --fail-with-body \
-  "$LLM_NOTARY_ADMIN_ORIGIN/v1/traces/$trace_id/share"
+  "$NOTARYD_ADMIN_ORIGIN/v1/traces/$trace_id/share"
 ```
 
 Report the bounded progress or failure code. Do not claim the trace is
@@ -210,7 +210,7 @@ The service returns the documented JSON error envelope for invalid query
 values, including malformed numeric values. Branch on `error.code`; do not
 parse plain-text framework messages.
 
-This output is deliberately limited to safe catalog fields. An automation
+This output is deliberately limited to safe metadata store fields. An automation
 should not print previews unless the user explicitly asks and the local preview
 policy allows it.
 

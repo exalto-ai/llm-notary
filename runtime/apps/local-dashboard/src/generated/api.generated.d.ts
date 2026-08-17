@@ -419,7 +419,7 @@ export interface paths {
         put?: never;
         /**
          * Verify a portable Trace package
-         * @description Verifies exactly one bounded .llmtrace body against a request-scoped key override or configured Notary trust. The package is never imported, retained, cataloged, or shared.
+         * @description Verifies exactly one bounded .llmtrace body against a request-scoped key override or configured Notary trust. The package is never imported, retained, indexed, or shared.
          */
         post: operations["verify_uploaded_trace"];
         delete?: never;
@@ -707,13 +707,13 @@ export interface components {
             next_cursor?: string | null;
         };
         TraceShare: {
+            access_enabled: boolean;
             /** Format: int64 */
             expires_at_unix_ms?: number | null;
             failure_code?: string | null;
             package_url?: string | null;
             password_protected: boolean;
             progress: components["schemas"]["ShareProgress"];
-            published: boolean;
             share_id: string;
             share_url?: string | null;
             trace_id: string;

@@ -3088,7 +3088,7 @@ function SettingsView({ status, api }: { status: Status; api: LocalApi }) {
           <Title order={2}>Preview storage</Title>
           <Text>
             Up to {status.preview_chars.toLocaleString()} characters of known text fields are
-            indexed {isCluster ? 'in shared metadata' : 'locally'}. Raw headers are never cataloged.
+            indexed {isCluster ? 'in shared metadata' : 'locally'}. Raw headers are never indexed.
           </Text>
           <dl className="receipt-list">
             <Fact label="Vault" value={status.vault} />

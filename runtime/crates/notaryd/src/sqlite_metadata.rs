@@ -548,7 +548,7 @@ impl SqliteMetadata {
         let connection = self.connection.lock().expect("metadata mutex poisoned");
         connection
             .query_row(
-                "SELECT trace_id, share_id, state, visibility, published,
+                "SELECT trace_id, share_id, progress, visibility, access_enabled,
                         password_protected, expires_at_unix_ms, failure_code,
                         share_url, package_url, updated_at_unix_ms
                  FROM trace_shares WHERE trace_id = ?",
@@ -563,12 +563,12 @@ impl SqliteMetadata {
         let connection = self.connection.lock().expect("metadata mutex poisoned");
         connection.execute(
             "INSERT INTO trace_shares (
-                trace_id, share_id, state, visibility, published, password_protected,
+                trace_id, share_id, progress, visibility, access_enabled, password_protected,
                 expires_at_unix_ms, failure_code, share_url, package_url, updated_at_unix_ms
              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(trace_id) DO UPDATE SET
-                share_id = excluded.share_id, state = excluded.state,
-                visibility = excluded.visibility, published = excluded.published,
+                share_id = excluded.share_id, progress = excluded.progress,
+                visibility = excluded.visibility, access_enabled = excluded.access_enabled,
                 password_protected = excluded.password_protected,
                 expires_at_unix_ms = excluded.expires_at_unix_ms,
                 failure_code = excluded.failure_code, share_url = excluded.share_url,
@@ -577,9 +577,9 @@ impl SqliteMetadata {
             params![
                 share.trace_id,
                 share.share_id,
-                share.state,
+                share.progress,
                 share.visibility,
-                share.published,
+                share.access_enabled,
                 share.password_protected,
                 share.expires_at_unix_ms.map(i64::try_from).transpose()?,
                 share.failure_code,
@@ -1708,9 +1708,9 @@ fn trace_share_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<TraceShareR
     Ok(TraceShareRecord {
         trace_id: row.get("trace_id")?,
         share_id: row.get("share_id")?,
-        state: row.get("state")?,
+        progress: row.get("progress")?,
         visibility: row.get("visibility")?,
-        published: row.get("published")?,
+        access_enabled: row.get("access_enabled")?,
         password_protected: row.get("password_protected")?,
         expires_at_unix_ms,
         failure_code: row.get("failure_code")?,

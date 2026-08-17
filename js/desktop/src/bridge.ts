@@ -1,12 +1,12 @@
 import { invoke } from '@tauri-apps/api/core';
 
 export type CaptureCounts = {
-  total_traces: number;
-  capturing: number;
-  ready_to_notarize: number;
+  captured: number;
+  notarizing: number;
   notarized: number;
-  failed: number;
-  active_operations: number;
+  needs_attention: number;
+  capturing: number;
+  capture_failed: number;
 };
 
 export type DesktopState = {
@@ -73,12 +73,12 @@ export type AccountConnectionStarted = {
 };
 
 const emptyCounts: CaptureCounts = {
-  total_traces: 0,
-  capturing: 0,
-  ready_to_notarize: 0,
+  captured: 0,
+  notarizing: 0,
   notarized: 0,
-  failed: 0,
-  active_operations: 0,
+  needs_attention: 0,
+  capturing: 0,
+  capture_failed: 0,
 };
 
 export const isTauri = () => '__TAURI_INTERNALS__' in window;
@@ -138,7 +138,7 @@ function forcedState(): DesktopState | null {
       version: '0.1.0',
       daemon_build_id: 'dev',
       notary: 'directory',
-      counts: { ...emptyCounts, total_traces: 14, ready_to_notarize: 3, notarized: 8 },
+      counts: { ...emptyCounts, captured: 3, notarizing: 1, notarized: 8, needs_attention: 2 },
     });
   }
   return null;

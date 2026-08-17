@@ -121,9 +121,9 @@ pub struct Event {
 pub struct TraceShareRecord {
     pub trace_id: String,
     pub share_id: String,
-    pub state: String,
+    pub progress: String,
     pub visibility: String,
-    pub published: bool,
+    pub access_enabled: bool,
     pub password_protected: bool,
     pub expires_at_unix_ms: Option<u64>,
     pub failure_code: Option<String>,

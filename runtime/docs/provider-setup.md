@@ -265,7 +265,7 @@ client surface. Remote and cloud Codex work cannot reach the loopback proxy.
 
 The default shared request-plus-response envelope is 15 MiB. The proxy counts
 the request before opening the provider connection and the response while it
-arrives, so it cannot knowingly write a bundle above the configured
+arrives, so it cannot knowingly write a checkpoint above the configured
 notarization limit.
 
 Non-`2xx` provider responses—including subscription authentication and provider

@@ -1171,7 +1171,7 @@ async fn verify_trace(
     Ok(Json(value))
 }
 
-#[utoipa::path(post, path = "/v1/verify", summary = "Verify a portable Trace package", description = "Verifies exactly one bounded .llmtrace body against a request-scoped key override or configured Notary trust. The package is never imported, retained, cataloged, or shared.", request_body(content = Vec<u8>, content_type = "application/vnd.exalto.notary.trace-package+zip"), params(("x-notary-trusted-notary-key" = Option<String>, Header, description = "Optional request-scoped compressed SEC1 Notary verification key in hexadecimal")), responses((status = 200, body = VerificationResult), (status = 400, body = ErrorEnvelope), (status = 401, body = ErrorEnvelope), (status = 500, body = ErrorEnvelope), (status = 503, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
+#[utoipa::path(post, path = "/v1/verify", summary = "Verify a portable Trace package", description = "Verifies exactly one bounded .llmtrace body against a request-scoped key override or configured Notary trust. The package is never imported, retained, indexed, or shared.", request_body(content = Vec<u8>, content_type = "application/vnd.exalto.notary.trace-package+zip"), params(("x-notary-trusted-notary-key" = Option<String>, Header, description = "Optional request-scoped compressed SEC1 Notary verification key in hexadecimal")), responses((status = 200, body = VerificationResult), (status = 400, body = ErrorEnvelope), (status = 401, body = ErrorEnvelope), (status = 500, body = ErrorEnvelope), (status = 503, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
 async fn verify_uploaded_trace(
     State(state): State<AdminState>,
     headers: HeaderMap,
@@ -1766,9 +1766,9 @@ fn trace_share_record_from_status(
     Ok(TraceShareRecord {
         trace_id,
         share_id: status.share_id,
-        state: ShareProgress::from_hosted(&status.state).as_str().into(),
+        progress: ShareProgress::from_hosted(&status.state).as_str().into(),
         visibility: status.visibility.as_str().into(),
-        published: status.published,
+        access_enabled: status.published,
         password_protected: status.password_protected,
         expires_at_unix_ms: match status.expires_at {
             Some(value) => Some(
@@ -2967,7 +2967,7 @@ struct TraceShare {
     share_id: String,
     progress: ShareProgress,
     visibility: ShareVisibility,
-    published: bool,
+    access_enabled: bool,
     password_protected: bool,
     expires_at_unix_ms: Option<u64>,
     failure_code: Option<String>,
@@ -2981,13 +2981,13 @@ impl TraceShare {
         Self {
             trace_id: record.trace_id,
             share_id: record.share_id,
-            progress: ShareProgress::from_hosted(&record.state),
+            progress: ShareProgress::from_hosted(&record.progress),
             visibility: if record.visibility == "listed" {
                 ShareVisibility::Listed
             } else {
                 ShareVisibility::Unlisted
             },
-            published: record.published,
+            access_enabled: record.access_enabled,
             password_protected: record.password_protected,
             expires_at_unix_ms: record.expires_at_unix_ms,
             failure_code: record.failure_code,

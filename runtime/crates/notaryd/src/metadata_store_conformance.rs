@@ -53,9 +53,9 @@ async fn canonical_trace_share_is_durable(store: Arc<dyn MetadataStore>) {
     let initial = TraceShareRecord {
         trace_id: "trc-share".into(),
         share_id: "share-one".into(),
-        state: "verifying".into(),
+        progress: "verifying".into(),
         visibility: "unlisted".into(),
-        published: true,
+        access_enabled: true,
         password_protected: false,
         expires_at_unix_ms: None,
         failure_code: None,
@@ -68,7 +68,7 @@ async fn canonical_trace_share_is_durable(store: Arc<dyn MetadataStore>) {
 
     let updated = TraceShareRecord {
         share_id: "share-one".into(),
-        state: "shared".into(),
+        progress: "shared".into(),
         visibility: "listed".into(),
         password_protected: true,
         expires_at_unix_ms: Some(20),
