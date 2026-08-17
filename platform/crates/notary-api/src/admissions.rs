@@ -30,6 +30,7 @@ const MAX_INSTANCE_ID_BYTES: usize = 128;
 const CLIENT_IP_HEADER: &str = "x-notary-client-ip";
 const PUBLIC_SUBJECT_PURPOSE: &str = "hosted-notarization-public-subject";
 const ACTIVATION_RECOVERY_INTERVAL_SECS: u64 = 15;
+const ACTIVATION_WINDOW_SECS: i64 = 60;
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -108,17 +109,26 @@ pub struct RedeemAdmissionRequest {
 #[serde(rename_all = "snake_case")]
 pub enum AdmissionRedemptionContract {
     OneOperationV1,
+    OneOperationV2,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
 pub struct RedeemedOperationResponse {
     pub operation_id: String,
+    pub activation_deadline: i64,
     pub max_attestable_http_bytes: i64,
     pub max_frame_bytes: i64,
     pub max_private_chunk_bytes: i64,
     pub max_private_chunk_commitments: i64,
     pub record_digest: Option<String>,
     pub notarization_allowance_bytes: Option<i64>,
+}
+
+#[derive(Deserialize, ToSchema)]
+pub struct ActivateOperationRequest {
+    pub operation_id: String,
+    pub notary_instance_id: String,
+    pub mode: AdmissionMode,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, ToSchema, PartialEq, Eq)]
@@ -175,6 +185,7 @@ struct OperationRow {
     notarization_allowance_bytes: Option<i64>,
     max_attestable_http_bytes: i64,
     admitted_at: i64,
+    activated_at: Option<i64>,
     terminal_outcome: Option<String>,
     settled_authenticated_bytes: Option<i64>,
 }
@@ -183,6 +194,7 @@ pub fn router() -> OpenApiRouter<NotaryApiState> {
     OpenApiRouter::new()
         .routes(routes!(issue_admission))
         .routes(routes!(redeem_admission))
+        .routes(routes!(activate_operation))
         .routes(routes!(settle_usage))
 }
 
@@ -410,9 +422,6 @@ async fn redeem_admission(
     authenticate_service(&state, &headers)?;
     let Json(request) =
         request.map_err(|_| ApiError::bad_request("invalid admission redemption request"))?;
-    match request.contract {
-        AdmissionRedemptionContract::OneOperationV1 => {}
-    }
     validate_opaque(
         &request.ticket,
         MAX_TICKET_BYTES,
@@ -508,12 +517,21 @@ async fn redeem_one_operation(
     .await?;
     let ticket_token_hash = sha256_hex(request.ticket.as_bytes());
     let operation_id = typed_id("op-");
+    let (activation_deadline, activated_at) = match request.contract {
+        AdmissionRedemptionContract::OneOperationV1 => (now, Some(now)),
+        AdmissionRedemptionContract::OneOperationV2 => (
+            now.checked_add(ACTIVATION_WINDOW_SECS).ok_or_else(|| {
+                ApiError::internal(anyhow::anyhow!("activation deadline overflow"))
+            })?,
+            None,
+        ),
+    };
     sqlx::query(
         "INSERT INTO admitted_operations
              (operation_id, ticket_token_hash, notary_instance_id, account_id, credit_subject,
               admission_tier, mode, record_digest, notarization_allowance_bytes,
               max_attestable_http_bytes, admitted_at, activation_deadline, activated_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $11, $11)",
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
     )
     .bind(&operation_id)
     .bind(&ticket_token_hash)
@@ -526,6 +544,8 @@ async fn redeem_one_operation(
     .bind(ticket.notarization_allowance_bytes)
     .bind(ticket.max_attestable_http_bytes)
     .bind(now)
+    .bind(activation_deadline)
+    .bind(activated_at)
     .execute(&mut *transaction)
     .await
     .map_err(database_error)?;
@@ -546,6 +566,7 @@ async fn redeem_one_operation(
     metrics::counter!("notary_api_notary_admissions_total", "pool" => pool.as_str(), "mode" => request.mode.as_str(), "outcome" => "admitted").increment(1);
     Ok(RedeemedOperationResponse {
         operation_id,
+        activation_deadline,
         max_attestable_http_bytes: ticket.max_attestable_http_bytes,
         max_frame_bytes: ticket.max_frame_bytes,
         max_private_chunk_bytes: ticket.max_private_chunk_bytes,
@@ -553,6 +574,87 @@ async fn redeem_one_operation(
         record_digest: ticket.record_digest,
         notarization_allowance_bytes: ticket.notarization_allowance_bytes,
     })
+}
+
+#[derive(FromRow)]
+struct ActivationRow {
+    notary_instance_id: String,
+    mode: String,
+    activation_deadline: i64,
+    activated_at: Option<i64>,
+    terminal_outcome: Option<String>,
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/internal/notary/operations/activate",
+    summary = "Activate an admitted operation after settlement state is durable",
+    request_body = ActivateOperationRequest,
+    responses(
+        (status = 204, description = "Operation activated or identical activation already applied"),
+        (status = 400, body = ErrorResponse),
+        (status = 401, body = ErrorResponse),
+        (status = 409, body = ErrorResponse),
+        (status = 410, body = ErrorResponse),
+        (status = 500, body = ErrorResponse)
+    ),
+    security(("serviceBearer" = [])),
+    tag = "notary-admission"
+)]
+async fn activate_operation(
+    State(state): State<NotaryApiState>,
+    headers: HeaderMap,
+    request: Result<Json<ActivateOperationRequest>, JsonRejection>,
+) -> ApiResult<StatusCode> {
+    authenticate_service(&state, &headers)?;
+    let Json(request) =
+        request.map_err(|_| ApiError::bad_request("invalid operation activation request"))?;
+    validate_opaque(&request.operation_id, 128, "invalid operation identifier")?;
+    validate_opaque(
+        &request.notary_instance_id,
+        MAX_INSTANCE_ID_BYTES,
+        "invalid notary instance identifier",
+    )?;
+    let now = unix_timestamp()?;
+    let mut transaction = state.database.begin().await.map_err(database_error)?;
+    credits::lock_ledger(&mut transaction).await?;
+    let operation = sqlx::query_as::<_, ActivationRow>(
+        "SELECT notary_instance_id, mode, activation_deadline, activated_at, terminal_outcome
+         FROM admitted_operations WHERE operation_id = $1 FOR UPDATE",
+    )
+    .bind(&request.operation_id)
+    .fetch_optional(&mut *transaction)
+    .await
+    .map_err(database_error)?
+    .ok_or_else(|| ApiError::gone("admitted operation is unknown"))?;
+    if operation.notary_instance_id != request.notary_instance_id
+        || operation.mode != request.mode.as_str()
+    {
+        return Err(ApiError::conflict(
+            "activation does not match the admitted operation",
+        ));
+    }
+    if operation.activated_at.is_some() {
+        transaction.commit().await.map_err(database_error)?;
+        return Ok(StatusCode::NO_CONTENT);
+    }
+    if operation.terminal_outcome.is_some() || operation.activation_deadline <= now {
+        return Err(ApiError::gone("operation activation window expired"));
+    }
+    let updated = sqlx::query(
+        "UPDATE admitted_operations SET activated_at = $1
+         WHERE operation_id = $2 AND activated_at IS NULL AND terminal_outcome IS NULL",
+    )
+    .bind(now)
+    .bind(&request.operation_id)
+    .execute(&mut *transaction)
+    .await
+    .map_err(database_error)?;
+    if updated.rows_affected() != 1 {
+        return Err(ApiError::gone("operation activation window expired"));
+    }
+    transaction.commit().await.map_err(database_error)?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[utoipa::path(
@@ -594,7 +696,7 @@ async fn settle_usage(
     let operation = sqlx::query_as::<_, OperationRow>(
         "SELECT operation_id, notary_instance_id, account_id, credit_subject, mode,
                 notarization_allowance_bytes, max_attestable_http_bytes, admitted_at,
-                terminal_outcome, settled_authenticated_bytes
+                activated_at, terminal_outcome, settled_authenticated_bytes
          FROM admitted_operations WHERE operation_id = $1 FOR UPDATE",
     )
     .bind(&request.operation_id)
@@ -621,6 +723,12 @@ async fn settle_usage(
                 "operation usage was already settled with different data",
             ))
         };
+    }
+    if operation.activated_at.is_none()
+        && (request.outcome != UsageSettlementOutcome::ServiceFailed
+            || request.authenticated_bytes != 0)
+    {
+        return Err(ApiError::conflict("admitted operation is not activated"));
     }
     if request.authenticated_bytes > 0 {
         credits::record_operation_debit(
@@ -1184,6 +1292,172 @@ mod tests {
         .await
         .unwrap();
         assert_eq!((debits, operations, activated), (0, 3, 3));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Docker and a disposable PostgreSQL container"]
+    async fn v2_operations_require_bound_activation_before_billable_settlement() {
+        let state = test_state().await;
+        let issue_capture = || {
+            issue_admission(
+                State(state.clone()),
+                test_peer(),
+                HeaderMap::new(),
+                Json(IssueAdmissionRequest {
+                    mode: AdmissionMode::Capture,
+                    record_digest: None,
+                    requested_allowance_bytes: None,
+                }),
+            )
+        };
+        let redeem = |ticket: String, instance: &'static str| {
+            redeem_admission(
+                State(state.clone()),
+                service_headers(&state),
+                Ok(Json(RedeemAdmissionRequest {
+                    ticket,
+                    notary_instance_id: instance.to_owned(),
+                    mode: AdmissionMode::Capture,
+                    registry_generation: state.registry.generation,
+                    contract: AdmissionRedemptionContract::OneOperationV2,
+                    usage_settlement: true,
+                })),
+            )
+        };
+
+        let ticket = issue_capture().await.unwrap().0;
+        let operation = redeem(ticket.ticket, "notary-v2").await.unwrap().0;
+        assert!(operation.activation_deadline > unix_timestamp().unwrap());
+        let activated_at: Option<i64> = sqlx::query_scalar(
+            "SELECT activated_at FROM admitted_operations WHERE operation_id = $1",
+        )
+        .bind(&operation.operation_id)
+        .fetch_one(&state.database)
+        .await
+        .unwrap();
+        assert_eq!(activated_at, None);
+
+        let pending_settlement = settle_usage(
+            State(state.clone()),
+            service_headers(&state),
+            Json(UsageSettlementRequest {
+                operation_id: operation.operation_id.clone(),
+                notary_instance_id: "notary-v2".to_owned(),
+                mode: AdmissionMode::Capture,
+                authenticated_bytes: 1,
+                outcome: UsageSettlementOutcome::Completed,
+            }),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(pending_settlement.status, StatusCode::CONFLICT);
+
+        let wrong_binding = activate_operation(
+            State(state.clone()),
+            service_headers(&state),
+            Ok(Json(ActivateOperationRequest {
+                operation_id: operation.operation_id.clone(),
+                notary_instance_id: "notary-other".to_owned(),
+                mode: AdmissionMode::Capture,
+            })),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(wrong_binding.status, StatusCode::CONFLICT);
+
+        let activation = ActivateOperationRequest {
+            operation_id: operation.operation_id.clone(),
+            notary_instance_id: "notary-v2".to_owned(),
+            mode: AdmissionMode::Capture,
+        };
+        assert_eq!(
+            activate_operation(
+                State(state.clone()),
+                service_headers(&state),
+                Ok(Json(activation)),
+            )
+            .await
+            .unwrap(),
+            StatusCode::NO_CONTENT
+        );
+        assert_eq!(
+            activate_operation(
+                State(state.clone()),
+                service_headers(&state),
+                Ok(Json(ActivateOperationRequest {
+                    operation_id: operation.operation_id.clone(),
+                    notary_instance_id: "notary-v2".to_owned(),
+                    mode: AdmissionMode::Capture,
+                })),
+            )
+            .await
+            .unwrap(),
+            StatusCode::NO_CONTENT
+        );
+
+        let cleanup_ticket = issue_capture().await.unwrap().0;
+        let cleanup = redeem(cleanup_ticket.ticket, "notary-cleanup")
+            .await
+            .unwrap()
+            .0;
+        assert_eq!(
+            settle_usage(
+                State(state.clone()),
+                service_headers(&state),
+                Json(UsageSettlementRequest {
+                    operation_id: cleanup.operation_id.clone(),
+                    notary_instance_id: "notary-cleanup".to_owned(),
+                    mode: AdmissionMode::Capture,
+                    authenticated_bytes: 0,
+                    outcome: UsageSettlementOutcome::ServiceFailed,
+                }),
+            )
+            .await
+            .unwrap(),
+            StatusCode::NO_CONTENT
+        );
+        let activation_after_cleanup = activate_operation(
+            State(state.clone()),
+            service_headers(&state),
+            Ok(Json(ActivateOperationRequest {
+                operation_id: cleanup.operation_id,
+                notary_instance_id: "notary-cleanup".to_owned(),
+                mode: AdmissionMode::Capture,
+            })),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(activation_after_cleanup.status, StatusCode::GONE);
+
+        let expiring_ticket = issue_capture().await.unwrap().0;
+        let expiring = redeem(expiring_ticket.ticket, "notary-expired")
+            .await
+            .unwrap()
+            .0;
+        let expired_at = unix_timestamp().unwrap();
+        sqlx::query(
+            "UPDATE admitted_operations
+             SET admitted_at = $1, activation_deadline = $2
+             WHERE operation_id = $3",
+        )
+        .bind(expired_at - 2)
+        .bind(expired_at - 1)
+        .bind(&expiring.operation_id)
+        .execute(&state.database)
+        .await
+        .unwrap();
+        let expired = activate_operation(
+            State(state.clone()),
+            service_headers(&state),
+            Ok(Json(ActivateOperationRequest {
+                operation_id: expiring.operation_id,
+                notary_instance_id: "notary-expired".to_owned(),
+                mode: AdmissionMode::Capture,
+            })),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(expired.status, StatusCode::GONE);
     }
 
     #[tokio::test]

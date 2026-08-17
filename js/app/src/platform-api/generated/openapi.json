@@ -1756,6 +1756,85 @@
         ]
       }
     },
+    "/api/internal/notary/operations/activate": {
+      "post": {
+        "tags": [
+          "notary-admission"
+        ],
+        "summary": "Activate an admitted operation after settlement state is durable",
+        "operationId": "activate_operation",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ActivateOperationRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Operation activated or identical activation already applied"
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "410": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "serviceBearer": []
+          }
+        ]
+      }
+    },
     "/api/internal/notary/operations/settle": {
       "post": {
         "tags": [
@@ -3475,6 +3554,25 @@
           }
         }
       },
+      "ActivateOperationRequest": {
+        "type": "object",
+        "required": [
+          "operation_id",
+          "notary_instance_id",
+          "mode"
+        ],
+        "properties": {
+          "mode": {
+            "$ref": "#/components/schemas/AdmissionMode"
+          },
+          "notary_instance_id": {
+            "type": "string"
+          },
+          "operation_id": {
+            "type": "string"
+          }
+        }
+      },
       "AdmissionLimits": {
         "type": "object",
         "required": [
@@ -3512,7 +3610,8 @@
       "AdmissionRedemptionContract": {
         "type": "string",
         "enum": [
-          "one_operation_v1"
+          "one_operation_v1",
+          "one_operation_v2"
         ]
       },
       "AdmissionTicketResponse": {
@@ -5290,12 +5389,17 @@
         "type": "object",
         "required": [
           "operation_id",
+          "activation_deadline",
           "max_attestable_http_bytes",
           "max_frame_bytes",
           "max_private_chunk_bytes",
           "max_private_chunk_commitments"
         ],
         "properties": {
+          "activation_deadline": {
+            "type": "integer",
+            "format": "int64"
+          },
           "max_attestable_http_bytes": {
             "type": "integer",
             "format": "int64"

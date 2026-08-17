@@ -416,6 +416,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/internal/notary/operations/activate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Activate an admitted operation after settlement state is durable */
+        post: operations["activate_operation"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/internal/notary/operations/settle": {
         parameters: {
             query?: never;
@@ -780,6 +797,11 @@ export interface components {
             billing: components["schemas"]["AccountBillingResponse"];
             links: components["schemas"]["AccountLinks"];
         };
+        ActivateOperationRequest: {
+            mode: components["schemas"]["AdmissionMode"];
+            notary_instance_id: string;
+            operation_id: string;
+        };
         AdmissionLimits: {
             /** Format: int64 */
             max_attestable_http_bytes: number;
@@ -793,7 +815,7 @@ export interface components {
         /** @enum {string} */
         AdmissionMode: "capture" | "notarization";
         /** @enum {string} */
-        AdmissionRedemptionContract: "one_operation_v1";
+        AdmissionRedemptionContract: "one_operation_v1" | "one_operation_v2";
         AdmissionTicketResponse: {
             /** Format: int64 */
             expires_at: number;
@@ -1293,6 +1315,8 @@ export interface components {
             usage_settlement: boolean;
         };
         RedeemedOperationResponse: {
+            /** Format: int64 */
+            activation_deadline: number;
             /** Format: int64 */
             max_attestable_http_bytes: number;
             /** Format: int64 */
@@ -2624,6 +2648,68 @@ export interface operations {
                 };
             };
             429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    activate_operation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ActivateOperationRequest"];
+            };
+        };
+        responses: {
+            /** @description Operation activated or identical activation already applied */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            410: {
                 headers: {
                     [name: string]: unknown;
                 };
