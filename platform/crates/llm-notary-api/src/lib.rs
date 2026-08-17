@@ -3059,7 +3059,7 @@ mod tests {
                  'retained-package', 'legacy-user', 'retained-package', 'admitted', $1,
                  1, $2, 'retained-upload', 'retained-intake', 1, 1, 1, $2, 2,
                  'retained-trace', 1, $3, 'OpenAI', 'api.openai.com', 'gpt-test',
-                 'retained-package', 1, $4, 'llm-notary/public-package-safety/v1'
+                 'retained-package', 1, $4, 'notary/public-package-safety/v1'
              )",
         )
         .bind(crate::intake::ARCHIVE_FORMAT)
@@ -3991,7 +3991,7 @@ mod tests {
              ('delete-trace', 'delete-user', 'delete-idempotency', 'admitted', 'listed', $1,
               1, $2, 'delete-upload', 'delete-intake', 2, 1, 1, 1,
               'delete-public-trace', 1, $3, 'openai', 'api.openai.com', 'gpt-test',
-              'delete-package', 1, $4, 'llm-notary/public-package-safety/v1')",
+              'delete-package', 1, $4, 'notary/public-package-safety/v1')",
         )
         .bind(crate::intake::ARCHIVE_FORMAT)
         .bind("a".repeat(64))

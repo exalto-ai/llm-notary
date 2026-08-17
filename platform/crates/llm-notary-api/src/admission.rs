@@ -1646,7 +1646,7 @@ mod tests {
                  $1, 'library-user', $1 || '-key', 'admitted', $2,
                  1, $3, $1 || '-upload', $1 || '-intake', 10, 1, 1,
                  1, 1, $3, $1 || '-trace', 1, $4, $5,
-                 $1 || '-package', 1, $6, 'llm-notary/public-package-safety/v1',
+                 $1 || '-package', 1, $6, 'notary/public-package-safety/v1',
                  $7, $7 || '.example.com', 'model-' || $1, $8,
                  'input ' || $1, 'output ' || $1, $9
              )",
