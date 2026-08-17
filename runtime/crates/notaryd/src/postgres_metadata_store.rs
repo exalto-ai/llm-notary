@@ -1270,7 +1270,7 @@ impl MetadataStore for PostgresMetadataStore {
             total_traces: value("total").map_err(db)?,
             capturing: value("capturing").map_err(db)?,
             ready_to_notarize: value("ready").map_err(db)?,
-            notarized: value("succeeded").map_err(db)?,
+            notarized: value("notarized").map_err(db)?,
             failed: value("failed").map_err(db)?,
             active_operations: value("active").map_err(db)?,
         })
