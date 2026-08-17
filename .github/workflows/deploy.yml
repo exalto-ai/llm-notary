@@ -29,6 +29,15 @@ jobs:
       # superfly/flyctl-actions 1.6
       - uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1
 
+      # The first canonical API cutover is an explicit maintenance operation
+      # documented in deploy/fly/README.md. Normal deployments must never
+      # record a legacy image as a rollback target or mix legacy and canonical
+      # replicas backed by different databases.
+      - name: Verify canonical notary-api production baseline
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_DEPLOY_TOKEN }}
+        run: bash deploy/fly/preflight-notary-api.sh
+
       # Build every image before changing any Machine. A build failure is then
       # a no-op in production, and each deploy below uses the resolved digest.
       - name: Build notary image on Fly
