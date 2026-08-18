@@ -136,6 +136,7 @@ struct ListedTraceRow {
     output_preview: Option<String>,
     password_protected: bool,
     shared_at: i64,
+    sort_at: i64,
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -149,7 +150,7 @@ struct PublicTracesQuery {
 
 #[derive(Deserialize, Serialize)]
 struct PublicTracePagePosition {
-    shared_at: i64,
+    sort_at: i64,
     id: String,
 }
 
@@ -294,7 +295,7 @@ async fn list_public_traces(
     let scope = CursorScope::new(
         "/api/public/traces",
         &(&search, &provider, shared_after),
-        "shared_at desc, trace_id desc",
+        "public_sort_at desc, trace_id desc",
     )
     .map_err(pagination::api_error)?;
     let position = page_query
@@ -312,7 +313,9 @@ async fn list_public_traces(
                 CASE WHEN traces.access_password_hash IS NULL
                      THEN traces.output_preview END AS output_preview,
                 traces.access_password_hash IS NOT NULL AS password_protected,
-                traces.verified_at AS shared_at
+                traces.verified_at AS shared_at,
+                CASE WHEN traces.access_password_hash IS NULL
+                     THEN traces.verified_at ELSE 0 END AS sort_at
          FROM traces
          JOIN accounts ON accounts.account_id = traces.account_id
          WHERE traces.status = 'shared'
@@ -330,23 +333,31 @@ async fn list_public_traces(
                 traces.access_password_hash IS NOT NULL
                 AND 'shared trace notary by exalto' ~* $2
            ))
-           AND ($3::BIGINT IS NULL OR traces.verified_at >= $3)
-           AND ($4::TEXT IS NULL OR (traces.verified_at, traces.trace_id) < ($5, $4))
-         ORDER BY traces.verified_at DESC, traces.trace_id DESC
+           AND ($3::BIGINT IS NULL OR (
+                traces.access_password_hash IS NULL AND traces.verified_at >= $3
+           ))
+           AND ($4::TEXT IS NULL OR (
+                CASE WHEN traces.access_password_hash IS NULL
+                     THEN traces.verified_at ELSE 0 END,
+                traces.trace_id
+           ) < ($5, $4))
+         ORDER BY CASE WHEN traces.access_password_hash IS NULL
+                       THEN traces.verified_at ELSE 0 END DESC,
+                  traces.trace_id DESC
          LIMIT $7",
     )
     .bind(&provider)
     .bind(&search_pattern)
     .bind(shared_after)
     .bind(position.as_ref().map(|position| &position.id))
-    .bind(position.as_ref().map(|position| position.shared_at))
+    .bind(position.as_ref().map(|position| position.sort_at))
     .bind(unix_timestamp()?)
     .bind(i64::try_from(limit + 1).map_err(|error| ApiError::internal(error.into()))?)
     .fetch_all(&state.database)
     .await
     .map_err(database_error)?;
     let page = Page::from_limit_plus_one(rows, limit, &scope, |trace| PublicTracePagePosition {
-        shared_at: trace.shared_at,
+        sort_at: trace.sort_at,
         id: trace.id.clone(),
     })
     .map_err(pagination::api_error)?;
@@ -1020,7 +1031,7 @@ fn normalize_report_message(message: Option<String>) -> ApiResult<Option<String>
     }
 }
 
-async fn load_public_bytes(
+pub(super) async fn load_public_bytes(
     state: &NotaryApiState,
     object_key: &str,
     size_bytes: i64,
@@ -1074,7 +1085,7 @@ fn add_discovery_headers(response: &mut Response, visibility: &str) {
     }
 }
 
-fn public_bytes(
+pub(super) fn public_bytes(
     bytes: Vec<u8>,
     content_type: &'static str,
     sha256: &str,
@@ -1345,7 +1356,7 @@ mod tests {
         assert_eq!(recent.items[0].shared_at, Some(200));
 
         let provider_filter = list_public_traces(
-            State(state),
+            State(state.clone()),
             Ok(Query(PublicTracesQuery {
                 limit: None,
                 cursor: None,
@@ -1437,7 +1448,7 @@ mod tests {
         assert!(filtered.items.is_empty());
 
         let searched = list_public_traces(
-            State(state),
+            State(state.clone()),
             Ok(Query(PublicTracesQuery {
                 limit: None,
                 cursor: None,
@@ -1450,6 +1461,28 @@ mod tests {
         .unwrap()
         .0;
         assert!(searched.items.is_empty());
+
+        let recent = list_public_traces(
+            State(state),
+            Ok(Query(PublicTracesQuery {
+                limit: None,
+                cursor: None,
+                search: None,
+                provider: None,
+                shared_after: Some(0),
+            })),
+        )
+        .await
+        .unwrap()
+        .0;
+        assert_eq!(
+            recent
+                .items
+                .iter()
+                .map(|trace| trace.trace_id.as_str())
+                .collect::<Vec<_>>(),
+            ["trace-public"]
+        );
     }
 
     #[tokio::test]

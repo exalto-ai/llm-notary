@@ -141,7 +141,7 @@ const usageFixture = ({
 } = {}) => ({
   credits,
   operations: { captures, notarizations },
-  hosted_traces: { total, shared, verifying, stored_bytes: storedBytes },
+  hosted_traces: { total, shared, verifying, needs_attention: 0, stored_bytes: storedBytes },
 });
 
 describe('hosted site', () => {
@@ -1598,9 +1598,18 @@ describe('hosted site', () => {
     await expect.element(page.getByText('4,096 bytes')).toBeVisible();
     await expect.element(page.getByText('c'.repeat(64))).toBeVisible();
     expect(document.title).toBe('Compare these two evidence trails. · Notary by Exalto');
-    expect(document.querySelector('meta[name="robots"]')?.getAttribute('content')).toBe(
-      'index, follow',
+    expect(document.querySelector('meta[name="robots"]')?.getAttribute('content')).toContain(
+      'noindex',
     );
+    expect(document.querySelector('link[rel="canonical"]')?.getAttribute('href')).toContain(
+      '/s/share-12',
+    );
+    expect(document.querySelector('meta[property="og:url"]')?.getAttribute('content')).toContain(
+      '/s/share-12',
+    );
+    expect(
+      page.getByRole('link', { name: 'Verify independently' }).element().getAttribute('href'),
+    ).toBe('#/docs/trace-packages');
 
     cleanup();
     render(

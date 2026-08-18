@@ -1002,7 +1002,7 @@ export function PublicTraces({
       ) : query || provider !== 'All' || dateRange !== 'all' ? (
         <section className="collection-empty">
           <b>Nothing matches.</b>
-          <p>Try a different search or provider.</p>
+          <p>Try a different search, provider, or date range.</p>
           <button
             type="button"
             onClick={() => {
@@ -1271,6 +1271,32 @@ export function PublicTracePage({
         ? description
         : title;
     }
+    const existingCanonical = document.head.querySelector('link[rel="canonical"]');
+    const canonical =
+      existingCanonical instanceof HTMLLinkElement
+        ? existingCanonical
+        : document.createElement('link');
+    if (!(existingCanonical instanceof HTMLLinkElement)) {
+      canonical.rel = 'canonical';
+      document.head.appendChild(canonical);
+    }
+    const existingOpenGraphUrl = document.head.querySelector('meta[property="og:url"]');
+    const openGraphUrl =
+      existingOpenGraphUrl instanceof HTMLMetaElement
+        ? existingOpenGraphUrl
+        : document.createElement('meta');
+    if (!(existingOpenGraphUrl instanceof HTMLMetaElement)) {
+      openGraphUrl.setAttribute('property', 'og:url');
+      document.head.appendChild(openGraphUrl);
+    }
+    const previousCanonical = canonical.href;
+    const previousOpenGraphUrl = openGraphUrl.content;
+    const shareUrl = new URL(
+      `/s/${encodeURIComponent(traceId)}`,
+      window.location.origin,
+    ).toString();
+    canonical.href = shareUrl;
+    openGraphUrl.content = shareUrl;
     const existingRobots = document.head.querySelector('meta[name="robots"][data-share-page]');
     const robots =
       existingRobots instanceof HTMLMetaElement ? existingRobots : document.createElement('meta');
@@ -1279,15 +1305,23 @@ export function PublicTracePage({
       robots.dataset.sharePage = 'true';
       document.head.appendChild(robots);
     }
-    robots.content = !indexable ? 'noindex, nofollow, noarchive' : 'index, follow';
+    // Public discovery happens through /#/traces. Individual share URLs are
+    // uniformly noindex so raw HTML, password gates, and failure states cannot
+    // disagree about whether metadata is safe to crawl.
+    robots.content = 'noindex, nofollow, noarchive';
     return () => {
       robots?.remove();
+      if (existingCanonical instanceof HTMLLinkElement) canonical.href = previousCanonical;
+      else canonical.remove();
+      if (existingOpenGraphUrl instanceof HTMLMetaElement)
+        openGraphUrl.content = previousOpenGraphUrl;
+      else openGraphUrl.remove();
       metadata.forEach((element, index) => {
         element.content = previousMetadata[index];
       });
       document.title = 'Notary by Exalto';
     };
-  }, [loadError, passwordRequired, share]);
+  }, [loadError, passwordRequired, share, traceId]);
   const unlock = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!password) return;
@@ -1583,7 +1617,7 @@ export function PublicTracePage({
             <button type="button" onClick={copyShareLink}>
               {copied ? 'Copied' : 'Copy link'}
             </button>
-            <a href="#/docs/verification">Verify independently</a>
+            <a href="#/docs/trace-packages">Verify independently</a>
             <button type="button" onClick={() => setReportOpen(true)}>
               Report this trace
             </button>
