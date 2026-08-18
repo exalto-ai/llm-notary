@@ -589,7 +589,9 @@ Unlisted or Listed link can read the disclosure; this is not private access.
 `DELETE /v1/traces/{trace_id}/share` stops public access without deleting or
 changing the local Notarized Trace. Its response retains the canonical hosted
 identity in a disabled state. Editing access settings does not republish it;
-`PUT` with `reactivate: true` is the explicit resume operation.
+`PUT` with `reactivate: true` is the explicit resume operation. If the retained
+expiration has elapsed, the resume request must also choose a new expiration
+or clear it with `expires_in_days: 0`.
 
 ## Local trust boundary
 

@@ -1133,7 +1133,11 @@ function NotarizedTraceInspector({
   const openShareDialog = (mode: ShareDialogMode) => {
     setShareDialogMode(mode);
     setShareVisibility(activeShare?.visibility ?? 'unlisted');
-    setShareExpiry(mode === 'create' ? 'none' : 'keep');
+    const stoppedWithElapsedExpiry =
+      mode === 'resume' &&
+      activeShare?.expires_at_unix_ms != null &&
+      activeShare.expires_at_unix_ms <= Date.now();
+    setShareExpiry(mode === 'create' ? 'none' : stoppedWithElapsedExpiry ? 'clear' : 'keep');
     setSharePasswordMode(mode === 'create' ? 'none' : 'keep');
     setSharePassword('');
     setShareHighEntropyReview(false);

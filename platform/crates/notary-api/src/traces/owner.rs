@@ -503,6 +503,15 @@ async fn create_hosted_trace(
         job = load_trace_by_source(&state, &account_id, &request.source_trace_id).await?;
     }
     if job.status == "stopped" && job.package_object_key.is_some() {
+        if job
+            .access_expires_at
+            .is_some_and(|expires_at| expires_at <= now)
+            && !expires_at_changed
+        {
+            return Err(ApiError::bad_request(
+                "expires_in_days is required to reactivate an expired Trace",
+            ));
+        }
         sqlx::query(
             "UPDATE traces
              SET status = 'shared', visibility = $1,
@@ -2241,6 +2250,23 @@ mod tests {
             .await
             .expect("stopped Trace");
 
+        sqlx::query("UPDATE traces SET created_at = 1, access_expires_at = $1")
+            .bind(unix_timestamp().unwrap() - 1)
+            .execute(&state.database)
+            .await
+            .expect("expire stopped Trace");
+        let mut expired_request = request();
+        expired_request.visibility = TraceVisibility::Unlisted;
+        let expired =
+            create_hosted_trace(State(state.clone()), headers.clone(), Json(expired_request))
+                .await
+                .expect_err("elapsed expiration must be replaced");
+        assert_eq!(expired.status, StatusCode::BAD_REQUEST);
+        sqlx::query("UPDATE traces SET access_expires_at = $1")
+            .bind(stopped.access_expires_at)
+            .execute(&state.database)
+            .await
+            .expect("restore active expiration");
         let mut keep = request();
         keep.visibility = TraceVisibility::Unlisted;
         create_hosted_trace(State(state.clone()), headers.clone(), Json(keep))

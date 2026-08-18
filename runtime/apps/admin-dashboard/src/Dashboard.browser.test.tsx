@@ -983,6 +983,42 @@ describe('Notary admin dashboard', () => {
       .toBeVisible();
   });
 
+  test('requires a new expiration choice when resuming an expired stopped share', async () => {
+    const traceId = 'trc-20260727-research-brief';
+    const fixture = createFixtureApi({
+      initialShare: {
+        traceId,
+        visibility: 'unlisted',
+        accessEnabled: false,
+        progress: 'stopped',
+        expiresAt: Date.now() - 60_000,
+      },
+    });
+    let requestedSettings: Parameters<LocalApi['share']>[1] | null = null;
+    const api: LocalApi = {
+      ...fixture,
+      share: async (id, settings) => {
+        requestedSettings = settings;
+        return fixture.share(id, settings);
+      },
+    };
+    renderDashboard(`/traces/${traceId}`, api);
+
+    await page.getByRole('button', { name: 'Resume sharing' }).click();
+    await expect
+      .element(page.getByLabelText('Share expiration'))
+      .toHaveTextContent('No expiration');
+    await page.getByRole('alertdialog').getByRole('button', { name: 'Resume sharing' }).click();
+    expect(requestedSettings).toEqual({
+      visibility: 'unlisted',
+      expires_in_days: 0,
+      reactivate: true,
+    });
+    await expect
+      .element(page.getByText('Anyone with this URL can read the disclosed Trace.'))
+      .toBeVisible();
+  });
+
   test('keeps the last persisted share visible when status refresh fails', async () => {
     const traceId = 'trc-20260727-research-brief';
     const fixture = createFixtureApi({
