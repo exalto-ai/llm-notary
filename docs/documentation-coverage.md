@@ -25,9 +25,9 @@ internal reference, and external user journey agree.
   reconciliation.
 - [x] CLI and local REST API: the service guide, agent playbook, portable skill,
   dashboard, and generated local OpenAPI cover status, capture search,
-  finalization, operations, verification, events, notary trust, account
+  notarization, operations, verification, events, notary trust, account
   connection, sharing, updates, and exit behavior.
-- [x] Deferred finalization: getting-started, architecture, dashboard, service,
+- [x] Deferred notarization: getting-started, architecture, dashboard, service,
   and artifact guides agree on asynchronous operations, deduplication,
   progress, interruption, retry, deterministic packaging, and source-capture
   retention.
@@ -35,14 +35,14 @@ internal reference, and external user journey agree.
   structural capture recovery, full `.llmtrace` verification, bare trace JSON,
   authenticated/derived/observed facts, disclosure, and non-guarantees.
 - [x] Local dashboard: the dashboard guide and deterministic screenshots cover
-  overview, capture inspection, finalization, verification, consented sharing,
+  overview, capture inspection, notarization, verification, consented sharing,
   activity, settings, responsive navigation, themes, empty/error states, and
   account connection.
 - [x] Agent integration: getting-started, provider setup, agent playbook, and
   portable skill agree on installation paths, `--metadata-only`, approval
   boundaries, secret handling, and live OpenAPI discovery.
 - [x] Generic remote notary: runtime architecture, self-hosting, and key
-  lifecycle cover signing keys, transport TLS, allowlists, capture/finalization
+  lifecycle cover signing keys, transport TLS, allowlists, capture/notarization
   capacity, lifecycle states, ticketless admission, and injected policy seams.
 - [x] Clustered daemon: cluster, service, database, and dashboard guides cover
   PostgreSQL/S3, migrations, one shared vault key, replica identity, readiness,

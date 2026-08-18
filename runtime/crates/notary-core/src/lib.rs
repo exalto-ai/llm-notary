@@ -1,4 +1,4 @@
-//! Shared TLSNotary plumbing for the LLM Notary proof of concept.
+//! Shared TLSNotary plumbing for the Notary proof of concept.
 //!
 //! The boundary here is deliberate: the local proxy owns request plaintext and
 //! the API key, while the remote notary relays authenticated TLS traffic and
@@ -981,7 +981,7 @@ impl CaptureCheckpoint {
         let result = (|| -> Result<()> {
             write_private_file(&staging, &encrypted)?;
             fs::rename(&staging, path)
-                .with_context(|| format!("finalizing encrypted checkpoint {}", path.display()))
+                .with_context(|| format!("completing encrypted checkpoint {}", path.display()))
         })();
         if result.is_err() {
             let _ = fs::remove_file(&staging);
@@ -1700,7 +1700,7 @@ async fn run_capture_session(
     {
         VerifierCommitStart::Mpc(verifier) => {
             verifier
-                .reject(Some("LLM Notary accepts Proxy-TLS sessions only"))
+                .reject(Some("Notary accepts Proxy-TLS sessions only"))
                 .await
                 .map_err(classify_tlsn_session_failure)?;
             return Err(NotarySessionFailure::client(anyhow!(

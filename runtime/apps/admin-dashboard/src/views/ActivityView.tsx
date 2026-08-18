@@ -152,12 +152,7 @@ const activityLabels: Record<string, string> = {
 };
 
 function activityLabel(event: Event) {
-  return (
-    activityLabels[event.event_type] ??
-    event.message.replace(/finalization/gi, (value) =>
-      value[0] === value[0]?.toUpperCase() ? 'Notarization' : 'notarization',
-    )
-  );
+  return activityLabels[event.event_type] ?? event.message;
 }
 
 export function EventList({

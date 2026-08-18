@@ -485,7 +485,7 @@ impl NotarydConfig {
             .ok_or_else(|| anyhow::anyhow!("notaryd configuration path has no parent"))?;
         fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
         let contents = format!(
-            "# LLM Notary local notaryd configuration.\n# This file is created automatically on first use. Edit it to change local behavior.\n\n{}",
+            "# Notary local notaryd configuration.\n# This file is created automatically on first use. Edit it to change local behavior.\n\n{}",
             toml::to_string_pretty(&Self::default())?
         );
         let mut file = match fs::OpenOptions::new()

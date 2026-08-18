@@ -445,9 +445,9 @@ pub async fn run(args: ProxyArgs) -> Result<()> {
         capture_enabled,
         config = %config_path.display(),
         providers = ?Provider::ALL,
-        "LLM Notary daemon proxy listening"
+        "Notary daemon proxy listening"
     );
-    tracing::info!(address = %state.config.admin.listen, "LLM Notary daemon admin API listening");
+    tracing::info!(address = %state.config.admin.listen, "Notary daemon admin API listening");
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let (heartbeat_shutdown_tx, heartbeat_shutdown_rx) = watch::channel(false);
     if let Some(cluster_runtime) = &cluster_runtime {
@@ -516,7 +516,7 @@ pub async fn run(args: ProxyArgs) -> Result<()> {
             .await;
         }
     }
-    tracing::info!("LLM Notary daemon draining before shutdown");
+    tracing::info!("Notary daemon draining before shutdown");
     let _ = shutdown_tx.send(true);
     let mut forced_server_shutdown = false;
     match exit {
@@ -607,7 +607,7 @@ pub async fn run(args: ProxyArgs) -> Result<()> {
             .release_replica(cluster_runtime.identity())
             .await?;
     }
-    tracing::info!("LLM Notary daemon shut down cleanly");
+    tracing::info!("Notary daemon shut down cleanly");
     Ok(())
 }
 
@@ -859,7 +859,7 @@ pub(crate) async fn fetch_registry_from(api_origin: &ApiOrigin) -> Result<(Regis
         .with_context(|| format!("fetching notary endpoint from {registry_source_url}"))?
         .bytes()
         .await
-        .context("reading notary registry from LLM Notary API")?;
+        .context("reading notary registry from Notary API")?;
     let registry = parse_hosted_registry(&bytes)?;
     Ok((registry, registry_source_url))
 }
@@ -905,7 +905,7 @@ async fn proxy(State(state): State<AppState>, request: Request) -> Response {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
             [("content-type", "application/json")],
-            r#"{"error":{"message":"LLM Notary proxy is draining"}}"#,
+            r#"{"error":{"message":"Notary proxy is draining"}}"#,
         )
             .into_response();
     }
@@ -947,20 +947,20 @@ fn proxy_error_response(error: &anyhow::Error) -> Response {
         return (
             StatusCode::BAD_GATEWAY,
             [("content-type", "application/json")],
-            r#"{"error":{"message":"LLM Notary proxy request failed"}}"#,
+            r#"{"error":{"message":"Notary proxy request failed"}}"#,
         )
             .into_response();
     };
     let retry_after_seconds = admission.retry_after().as_secs().max(1);
     let message = match admission.rejection() {
         crate::NotaryAdmissionRejection::CaptureAtCapacity => {
-            "LLM Notary capture capacity is temporarily full; retry shortly."
+            "Notary capture capacity is temporarily full; retry shortly."
         }
         crate::NotaryAdmissionRejection::CaptureDisabled => {
-            "LLM Notary is temporarily not accepting new traces."
+            "Notary is temporarily not accepting new traces."
         }
         crate::NotaryAdmissionRejection::NotarizationAtCapacity => {
-            "LLM Notary returned an unexpected notarization-capacity rejection. Retry shortly."
+            "Notary returned an unexpected notarization-capacity rejection. Retry shortly."
         }
         crate::NotaryAdmissionRejection::AdmissionDenied
         | crate::NotaryAdmissionRejection::AdmissionExpired
@@ -1036,7 +1036,7 @@ fn provider_route_not_found_response() -> Response {
     (
         StatusCode::NOT_FOUND,
         [("content-type", "application/json")],
-        r#"{"error":{"message":"an enabled LLM Notary provider path is required"}}"#,
+        r#"{"error":{"message":"an enabled Notary provider path is required"}}"#,
     )
         .into_response()
 }
@@ -1397,7 +1397,7 @@ async fn proxy_inner(state: AppState, request: Request) -> Result<Response> {
                         "capture_error",
                     )
                     .await;
-                    tracing::warn!(%error, "stream ended without an LLM Notary capture checkpoint")
+                    tracing::warn!(%error, "stream ended without a Notary capture checkpoint")
                 }
                 Err(error) => {
                     let _ = fail_capture(
@@ -2855,7 +2855,7 @@ mod tests {
                 "error": {
                     "type": "notary_capacity",
                     "code": "capture_at_capacity",
-                    "message": "LLM Notary capture capacity is temporarily full; retry shortly.",
+                    "message": "Notary capture capacity is temporarily full; retry shortly.",
                     "retry_after_seconds": 7,
                 }
             })
@@ -2992,7 +2992,7 @@ mod tests {
         let body = response.into_body().collect().await.unwrap().to_bytes();
         assert_eq!(
             body,
-            Bytes::from_static(br#"{"error":{"message":"LLM Notary proxy request failed"}}"#)
+            Bytes::from_static(br#"{"error":{"message":"Notary proxy request failed"}}"#)
         );
     }
 }

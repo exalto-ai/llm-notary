@@ -1,6 +1,6 @@
 # Architecture and trust model
 
-LLM Notary makes one narrow provenance claim: disclosed HTTP bytes came from a
+Notary makes one narrow provenance claim: disclosed HTTP bytes came from a
 TLS connection to a named provider, as witnessed by a selected notary key, and
 the included OpenTelemetry trace is the deterministic normalization of those
 bytes.
@@ -13,10 +13,10 @@ convenience features.
 | Component | Holds plaintext? | Durable state | Main responsibility |
 | --- | --- | --- | --- |
 | Provider client | yes | provider credential | Sends an ordinary provider request to the local proxy |
-| `notaryd` | yes | vault, catalog, operations, artifacts, trust cache | Runs the proxy, captures private state, finalizes, and verifies |
+| `notaryd` | yes | vault, catalog, operations, artifacts, trust cache | Runs the proxy, captures private state, notarizes, and verifies |
 | Generic remote notary | no application plaintext | signing key only | Resolves the provider, relays encrypted TLS records, witnesses the session, and completes proof work |
 | Platform policy adapter | no application plaintext | durable usage-settlement outbox | Redeems one-operation tickets, tightens generic runtime limits, and reports authoritative usage |
-| Model provider | yes | provider-owned | Serves an ordinary HTTPS request without an LLM Notary integration |
+| Model provider | yes | provider-owned | Serves an ordinary HTTPS request without a Notary integration |
 | Hosted platform | only explicitly uploaded disclosures | accounts, share intake, admitted traces and exact packages | Issues admission tickets, verifies uploads, serves stable links, and indexes Listed shares |
 | Independent verifier | disclosed package contents | chosen trust policy | Verifies a `.llmtrace` against a trusted notary key |
 
@@ -47,7 +47,7 @@ HTTPS. It streams request and response bodies with backpressure and does not
 follow redirects. The remote notary and hosted admission service are absent
 from this path, and the daemon creates no capture row, capture ID, preview, or
 artifact. A direct request therefore produces no evidence that can later be
-finalized or verified. Capture mode is a selection, never an availability
+notarized or verified. Capture mode is a selection, never an availability
 fallback: neither path retries through the other after a failure.
 
 ## Capture flow
@@ -72,7 +72,7 @@ acquisition and hosted key discovery.
 7. After the final response, the notary signs a deferred receipt and the local
    daemon vault-encrypts its client checkpoint as `.llmcapture`.
 
-The daemon writes that encrypted checkpoint and finalized `.llmtrace` packages
+The daemon writes that encrypted checkpoint and notarized `.llmtrace` packages
 through an immutable artifact-store contract. Local filesystem storage is the
 default; an operator may explicitly select a private S3-compatible namespace.
 S3 does not add a new evidence format or encryption layer: `.llmcapture` is
@@ -84,27 +84,27 @@ The notary learns the selected provider hostname, ciphertext sizes, timing,
 and protocol metadata. It does not receive the provider credential, prompt, or
 response plaintext. The local daemon necessarily sees all three.
 
-Capture and finalization have independent notary capacity budgets. Capture is
-latency-sensitive; finalization is CPU- and memory-intensive. A capacity
+Capture and notarization have independent notary capacity budgets. Capture is
+latency-sensitive; notarization is CPU- and memory-intensive. A capacity
 rejection happens before expensive TLSNotary work and leaves any existing
-bundle unchanged.
+trace unchanged.
 
-## Deferred finalization
+## Deferred notarization
 
 The capture contains the client state required to reconstruct and prove the
 original session. It also contains a notary-signed receipt that binds it to the
-signing key and lets a later finalizer select a compatible notary.
+signing key and lets a later notarization select a compatible notary.
 
 The original socket and notary process do not need to survive. Any notary
-instance holding the same signing key can complete finalization before that
-key's drain deadline. The notary stores no per-bundle checkpoint.
+instance holding the same signing key can complete notarization before that
+key's drain deadline. The notary stores no per-trace checkpoint.
 
-Hosted finalization obtains a new one-operation ticket bound to the immutable
-record digest and exact authenticated byte allowance in the source bundle. The
+Hosted notarization obtains a new one-operation ticket bound to the immutable
+record digest and exact authenticated byte allowance in the source capture. The
 client does not renew or release tickets and makes no admission decision from a
 locally cached credit balance.
 
-Finalization creates selective TLSNotary disclosure, verifies it locally,
+Notarization creates selective TLSNotary disclosure, verifies it locally,
 normalizes the authenticated provider exchange, and writes the deterministic
 `.llmtrace` archive atomically. It never consumes the source capture.
 
@@ -166,7 +166,7 @@ Use these distinctions when describing a trace:
 
 ## What the system does not prove
 
-LLM Notary does not establish:
+Notary does not establish:
 
 - that a model response is true, correct, safe, complete, or useful;
 - that a named person authored a prompt;
@@ -183,7 +183,7 @@ the current prototype.
 
 ## Sharing boundary
 
-Local capture, finalization, and verification never imply sharing.
+Local capture, notarization, and verification never imply sharing.
 Sharing requires a separately authorized and explicit action plus an Unlisted
 or Listed choice. Owners can later stop sharing, set an expiry, or require a
 password on the stable link. These are hosted access controls, not a change to

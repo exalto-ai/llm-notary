@@ -1,6 +1,6 @@
 # Artifact formats and verification
 
-LLM Notary uses three artifacts with different privacy and trust properties.
+Notary uses three artifacts with different privacy and trust properties.
 Do not describe them interchangeably.
 
 | Artifact | Location | Contains proof? | Shareable? |

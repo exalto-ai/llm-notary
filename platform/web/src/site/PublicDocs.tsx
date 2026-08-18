@@ -303,7 +303,7 @@ const docPages: Record<DocPageKey, DocPage> = {
       {
         heading: 'OpenRouter + Chat Completions',
         body: 'The model slug remains trace metadata. The resulting evidence authenticates OpenRouter—not the vendor named in that slug. The Authorization, HTTP-Referer, and X-Title header values are hidden in a notarized package.',
-        code: 'curl http://127.0.0.1:8787/openrouter/api/v1/chat/completions \\\n  -H "Authorization: Bearer $OPENROUTER_API_KEY" \\\n  -H "Content-Type: application/json" \\\n  -H "HTTP-Referer: https://example.test" \\\n  -H "X-Title: Notary example" \\\n  -d \'{"model":"YOUR_MODEL","stream":true,"messages":[{"role":"user","content":"Reply with exactly: llm-notary"}]}\'',
+        code: 'curl http://127.0.0.1:8787/openrouter/api/v1/chat/completions \\\n  -H "Authorization: Bearer $OPENROUTER_API_KEY" \\\n  -H "Content-Type: application/json" \\\n  -H "HTTP-Referer: https://example.test" \\\n  -H "X-Title: Notary example" \\\n  -d \'{"model":"YOUR_MODEL","stream":true,"messages":[{"role":"user","content":"Reply with exactly: notary"}]}\'',
       },
       {
         heading: 'Where subscription login works',
@@ -320,12 +320,12 @@ const docPages: Record<DocPageKey, DocPage> = {
       {
         heading: 'Codex + OpenAI API key',
         body: "Replace YOUR_RESPONSES_MODEL with a model available to the OpenAI API key. The explicit no-WebSocket capability keeps Codex on this prototype's supported HTTP transport.",
-        code: 'Add this to ~/.codex/config.toml:\n\nmodel_provider = "llm-notary"\nmodel = "YOUR_RESPONSES_MODEL"\n\n[model_providers.llm-notary]\nname = "Notary local proxy"\nbase_url = "http://127.0.0.1:8787/openai/v1"\nenv_key = "OPENAI_API_KEY"\nwire_api = "responses"\nsupports_websockets = false',
+        code: 'Add this to ~/.codex/config.toml:\n\nmodel_provider = "notary"\nmodel = "YOUR_RESPONSES_MODEL"\n\n[model_providers.notary]\nname = "Notary local proxy"\nbase_url = "http://127.0.0.1:8787/openai/v1"\nenv_key = "OPENAI_API_KEY"\nwire_api = "responses"\nsupports_websockets = false',
       },
       {
         heading: 'Codex + ChatGPT plan',
         body: 'This flow is live-tested with Codex CLI. First run codex login status and confirm that Codex says it is logged in using ChatGPT. Do not set env_key in this provider. Codex owns the login and refreshes it; Notary only forwards the request headers and hides every header value from the notarized package. The proof authenticates chatgpt.com and the disclosed bodies, not the account owner, plan, or billing. Codex desktop is not yet end-to-end tested or supported, and cloud work cannot reach the loopback route.',
-        code: 'Add this to ~/.codex/config.toml:\n\nmodel_provider = "llm-notary-chatgpt"\n\n[model_providers.llm-notary-chatgpt]\nname = "Notary — ChatGPT plan"\nbase_url = "http://127.0.0.1:8787/codex"\nrequires_openai_auth = true\nwire_api = "responses"\nsupports_websockets = false',
+        code: 'Add this to ~/.codex/config.toml:\n\nmodel_provider = "notary-chatgpt"\n\n[model_providers.notary-chatgpt]\nname = "Notary — ChatGPT plan"\nbase_url = "http://127.0.0.1:8787/codex"\nrequires_openai_auth = true\nwire_api = "responses"\nsupports_websockets = false',
       },
       {
         heading: 'Run Codex',
@@ -339,7 +339,7 @@ const docPages: Record<DocPageKey, DocPage> = {
       {
         heading: 'Claude Code + claude.ai plan',
         body: 'Run claude auth status first; Claude Code itself must report a saved first-party login. A login in the native Claude desktop app is separate. Remove apiKeyHelper and do not set ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN. Claude Code owns login and refresh; Notary forwards its authorization and Messages protocol unchanged and hides every header value from the notarized package. The proof authenticates api.anthropic.com and the disclosed bodies, not the account owner, subscription, or billing. Native Claude Desktop, web, Slack, remote, and cloud sessions do not run through this local route.',
-        code: "env -u ANTHROPIC_API_KEY -u ANTHROPIC_AUTH_TOKEN \\\n  ANTHROPIC_BASE_URL=http://127.0.0.1:8787/anthropic \\\n  claude -p 'Reply with exactly: llm-notary'",
+        code: "env -u ANTHROPIC_API_KEY -u ANTHROPIC_AUTH_TOKEN \\\n  ANTHROPIC_BASE_URL=http://127.0.0.1:8787/anthropic \\\n  claude -p 'Reply with exactly: notary'",
       },
       {
         heading: 'OpenCode + DeepSeek',

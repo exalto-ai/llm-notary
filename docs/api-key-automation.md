@@ -1,6 +1,6 @@
 # API keys for automation
 
-Use a stable, scoped LLM Notary API key when `notaryd` runs without a
+Use a stable, scoped Notary API key when `notaryd` runs without a
 person available to approve and preserve a rotating device session. API keys
 are intended for CI systems, cron jobs, and unattended hosts. They authenticate
 the daemon to the hosted platform; they are not model-provider credentials.
@@ -81,26 +81,26 @@ used to encrypt private local bundles on a host without an OS vault.
 jobs:
   capture:
     runs-on: ubuntu-latest
-    environment: llm-notary
+    environment: notary
     env:
       NOTARYD_PLATFORM_API_KEY: ${{ secrets.NOTARYD_PLATFORM_API_KEY }}
-      LLM_NOTARY_VAULT_PASSPHRASE_FILE: ${{ runner.temp }}/llm-notary-vault-passphrase
+      NOTARYD_VAULT_PASSPHRASE_FILE: ${{ runner.temp }}/notary-vault-passphrase
     steps:
       - name: Check out the public runtime
         uses: actions/checkout@v6
         with:
           repository: exalto-ai/notary-runtime
       - uses: dtolnay/rust-toolchain@1.95.0
-      - name: Install LLM Notary
+      - name: Install Notary
         run: |
           cargo install --locked --path crates/notaryd --bin notaryd
           cargo install --locked --path crates/notaryctl --bin notaryctl
       - name: Start the local service
         env:
-          VAULT_PASSPHRASE: ${{ secrets.LLM_NOTARY_VAULT_PASSPHRASE }}
+          VAULT_PASSPHRASE: ${{ secrets.NOTARY_VAULT_PASSPHRASE }}
         run: |
           umask 077
-          printf '%s' "$VAULT_PASSPHRASE" > "$LLM_NOTARY_VAULT_PASSPHRASE_FILE"
+          printf '%s' "$VAULT_PASSPHRASE" > "$NOTARYD_VAULT_PASSPHRASE_FILE"
           notaryd > "$RUNNER_TEMP/notaryd.log" 2>&1 &
           for attempt in $(seq 1 30); do
             curl --fail --silent http://127.0.0.1:8788/healthz && exit 0

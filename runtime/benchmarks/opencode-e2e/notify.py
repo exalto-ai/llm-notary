@@ -59,7 +59,7 @@ def slack_payload(result: dict[str, Any]) -> dict[str, Any]:
             f"/actions/runs/{os.environ['GITHUB_RUN_ID']}"
         )
     status_text = "passed" if passed else "failed"
-    header = f"{icon} LLM Notary OpenCode canary {status_text}"
+    header = f"{icon} Notary OpenCode canary {status_text}"
     if run_url:
         header += f" · <{run_url}|run>"
     fields = [

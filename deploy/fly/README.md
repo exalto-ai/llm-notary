@@ -20,6 +20,12 @@ through Fly's encrypted backhaul. The configuration deliberately uses the
 CNAME to the target reported by `fly certs setup`; its `_fly-ownership` TXT
 record lets Fly issue and renew the public certificate.
 
+The three Fly applications still carry the retired brand in their names. Fly has no
+in-place application rename, so changing them means creating new applications and migrating
+every secret, volume, address, and hostname — including a certificate move on the production
+origin. That is tracked separately rather than bundled into the Notary rename; every other
+deployment identity, including the downloads bucket, is already canonical.
+
 The checked-in configuration targets the `llm-notary-prod` organization. Create
 the three apps and provision a private Flycast address for the API before the
 first deployment. Keep a private notary volume available for durable hosted

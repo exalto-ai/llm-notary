@@ -448,19 +448,19 @@ pub(crate) async fn poll_authorization(
         .header("X-Notary-Poll-Secret", &pending.poll_secret)
         .send()
         .await
-        .context("polling LLM Notary account authorization")?;
+        .context("polling Notary account authorization")?;
     if response.status() == StatusCode::PRECONDITION_REQUIRED {
         return Ok(AuthorizationPoll::Pending);
     }
     if response.status() == StatusCode::GONE {
-        bail!("LLM Notary account authorization expired or was already used")
+        bail!("Notary account authorization expired or was already used")
     }
     let tokens = response
         .error_for_status()
-        .context("completing LLM Notary account authorization")?
+        .context("completing Notary account authorization")?
         .json::<AuthorizationComplete>()
         .await
-        .context("reading LLM Notary account credentials")?;
+        .context("reading Notary account credentials")?;
     let _refresh = credential_refresh_guard().await;
     save_credentials(&FileCredentials {
         api_origin: pending.api_origin.clone(),
@@ -675,7 +675,7 @@ async fn authenticate_configuration(
 ) -> Result<AuthenticatedApi> {
     match configuration {
         CredentialConfiguration::Anonymous { .. } => {
-            bail!("an LLM Notary account connection is required")
+            bail!("a Notary account connection is required")
         }
         CredentialConfiguration::ApiKey(authenticated) => Ok(authenticated),
         CredentialConfiguration::DeviceSession { .. } => authenticate_device_session().await,
@@ -684,8 +684,7 @@ async fn authenticate_configuration(
 
 async fn authenticate_device_session() -> Result<AuthenticatedApi> {
     let _refresh = credential_refresh_guard().await;
-    let mut credentials =
-        load_credentials().context("an LLM Notary account connection is required")?;
+    let mut credentials = load_credentials().context("a Notary account connection is required")?;
     let (access_token, rotated_refresh_token) = refresh(&credentials).await?;
     credentials.refresh_token = rotated_refresh_token;
     save_credentials(&credentials)?;
@@ -718,7 +717,7 @@ async fn issue_admission(request_body: AdmissionRequest<'_>) -> Result<Admission
         }
         CredentialConfiguration::DeviceSession { .. } => {
             let authenticated = authenticate_device_session().await.context(
-                "the connected LLM Notary account could not be refreshed; reconnect it or explicitly sign out to use public access",
+                "the connected Notary account could not be refreshed; reconnect it or explicitly sign out to use public access",
             )?;
             (authenticated.origin.clone(), Some(authenticated))
         }
@@ -923,13 +922,13 @@ fn read_api_key_file(path: &Path) -> Result<String> {
 
 fn validate_api_key_shape(value: &str) -> Result<()> {
     let Some(value) = value.strip_prefix(API_KEY_VERSION_PREFIX) else {
-        bail!("LLM Notary API key has an unsupported format")
+        bail!("Notary API key has an unsupported format")
     };
     let Some((id, secret)) = value.split_once('_') else {
-        bail!("LLM Notary API key has an unsupported format")
+        bail!("Notary API key has an unsupported format")
     };
     if !is_lower_hex(id, 32) || !is_lower_hex(secret, 64) {
-        bail!("LLM Notary API key has an unsupported format")
+        bail!("Notary API key has an unsupported format")
     }
     Ok(())
 }
@@ -1014,9 +1013,7 @@ fn load_credentials() -> Result<FileCredentials> {
         serde_json::from_slice(&data).context("parse Device credentials")?;
     if credentials.refresh_token.is_empty() {
         credentials.refresh_token = keychain_load()?.ok_or_else(|| {
-            anyhow!(
-                "LLM Notary account credentials are missing; reconnect through the local admin API"
-            )
+            anyhow!("Notary account credentials are missing; reconnect through the local admin API")
         })?;
     }
     Ok(credentials)
@@ -1165,7 +1162,7 @@ fn keychain_store(token: &str) -> Result<()> {
     let mut child = Command::new("secret-tool")
         .args([
             "store",
-            "--label=LLM Notary account credential",
+            "--label=Notary account credential",
             "service",
             KEYCHAIN_SERVICE,
             "account",

@@ -38,7 +38,7 @@ provider account rather than copying a time-sensitive model name.
 | Native Claude Desktop | Cannot currently be configured for the local route |
 | Browser, Slack, remote, or cloud sessions | Outside the loopback proxy and unsupported |
 
-The LLM Notary macOS app can start and manage the local proxy for either
+The Notary macOS app can start and manage the local proxy for either
 supported CLI. It does not supply the provider login or configure the vendor
 client. Codex desktop may read the same local Codex configuration for local
 work, but that path remains unverified; do not rely on it as a supported
@@ -50,7 +50,7 @@ integration yet.
 curl http://127.0.0.1:8787/openai/v1/responses \
   -H "Authorization: Bearer $OPENAI_API_KEY" \
   -H 'Content-Type: application/json' \
-  -d '{"model":"YOUR_MODEL","input":"Reply with exactly: llm-notary","stream":true}'
+  -d '{"model":"YOUR_MODEL","input":"Reply with exactly: notary","stream":true}'
 ```
 
 Use the Responses API. Chat Completions normalization remains covered by
@@ -64,7 +64,7 @@ curl http://127.0.0.1:8787/anthropic/v1/messages \
   -H "x-api-key: $ANTHROPIC_API_KEY" \
   -H 'anthropic-version: 2023-06-01' \
   -H 'content-type: application/json' \
-  -d '{"model":"YOUR_MODEL","max_tokens":64,"messages":[{"role":"user","content":"Reply with exactly: llm-notary"}]}'
+  -d '{"model":"YOUR_MODEL","max_tokens":64,"messages":[{"role":"user","content":"Reply with exactly: notary"}]}'
 ```
 
 The `x-api-key` value, `anthropic-version` value, and content type are hidden in
@@ -82,7 +82,7 @@ claude auth status
 It must report `loggedIn: true` with the first-party provider. A login in the
 native Claude desktop app is separate and does not establish that Claude Code
 CLI state. If the CLI is logged out, run `claude login` directly without the
-LLM Notary base URL, then check again. LLM Notary does not perform the login or
+Notary base URL, then check again. Notary does not perform the login or
 refresh flow.
 
 Run Claude Code with only its Anthropic base URL changed:
@@ -90,7 +90,7 @@ Run Claude Code with only its Anthropic base URL changed:
 ```bash
 env -u ANTHROPIC_API_KEY -u ANTHROPIC_AUTH_TOKEN \
   ANTHROPIC_BASE_URL=http://127.0.0.1:8787/anthropic \
-  claude -p 'Reply with exactly: llm-notary'
+  claude -p 'Reply with exactly: notary'
 ```
 
 Remove any `apiKeyHelper` setting while using subscription authentication. Do
@@ -98,7 +98,7 @@ not add a gateway API key or an `ANTHROPIC_AUTH_TOKEN`: without those
 overrides, Claude Code attaches its saved claude.ai authorization and includes
 the OAuth capability in `anthropic-beta`.
 
-LLM Notary forwards `Authorization`, `anthropic-beta`, `anthropic-version`, the
+Notary forwards `Authorization`, `anthropic-beta`, `anthropic-version`, the
 `?beta=true` query, streaming events (including pings), tool definitions, tool
 calls, and other current Messages fields unchanged. It treats Anthropic header
 and body fields as open protocol lists rather than filtering them to a frozen
@@ -129,7 +129,7 @@ requested API path.
 curl http://127.0.0.1:8787/deepseek/chat/completions \
   -H "Authorization: Bearer $DEEPSEEK_API_KEY" \
   -H 'Content-Type: application/json' \
-  -d '{"model":"YOUR_MODEL","messages":[{"role":"user","content":"Reply with exactly: llm-notary"}]}'
+  -d '{"model":"YOUR_MODEL","messages":[{"role":"user","content":"Reply with exactly: notary"}]}'
 ```
 
 ## OpenRouter
@@ -139,8 +139,8 @@ curl http://127.0.0.1:8787/openrouter/api/v1/chat/completions \
   -H "Authorization: Bearer $OPENROUTER_API_KEY" \
   -H 'Content-Type: application/json' \
   -H 'HTTP-Referer: https://example.test' \
-  -H 'X-Title: LLM Notary example' \
-  -d '{"model":"YOUR_MODEL","stream":true,"messages":[{"role":"user","content":"Reply with exactly: llm-notary"}]}'
+  -H 'X-Title: Notary example' \
+  -d '{"model":"YOUR_MODEL","stream":true,"messages":[{"role":"user","content":"Reply with exactly: notary"}]}'
 ```
 
 The verified provider is OpenRouter at `openrouter.ai`. A slug such as
@@ -169,11 +169,11 @@ Add the following to `~/.codex/config.toml`, replacing the model with one
 available to the OpenAI API key:
 
 ```toml
-model_provider = "llm-notary"
+model_provider = "notary"
 model = "YOUR_RESPONSES_MODEL"
 
-[model_providers.llm-notary]
-name = "LLM Notary local proxy"
+[model_providers.notary]
+name = "Notary local proxy"
 base_url = "http://127.0.0.1:8787/openai/v1"
 env_key = "OPENAI_API_KEY"
 wire_api = "responses"
@@ -184,7 +184,7 @@ Then run Codex normally, for example:
 
 ```bash
 codex exec --ephemeral --skip-git-repo-check \
-  'Reply with exactly: llm-notary'
+  'Reply with exactly: notary'
 ```
 
 The custom-provider keys above follow the current Codex configuration
@@ -211,10 +211,10 @@ Add this provider to `~/.codex/config.toml` and select it with
 `model_provider`. Keep your current model setting:
 
 ```toml
-model_provider = "llm-notary-chatgpt"
+model_provider = "notary-chatgpt"
 
-[model_providers.llm-notary-chatgpt]
-name = "LLM Notary — ChatGPT plan"
+[model_providers.notary-chatgpt]
+name = "Notary — ChatGPT plan"
 base_url = "http://127.0.0.1:8787/codex"
 requires_openai_auth = true
 wire_api = "responses"
@@ -223,7 +223,7 @@ supports_websockets = false
 
 Do not add `env_key` to this provider. `requires_openai_auth = true` tells
 Codex to attach its saved ChatGPT authorization and account-routing headers.
-LLM Notary forwards those values for the provider request, but does not read
+Notary forwards those values for the provider request, but does not read
 Codex's auth cache, collect browser cookies, refresh the login, or write the
 header values to logs or notarized packages.
 
@@ -231,11 +231,11 @@ Run Codex normally after starting `notaryd`:
 
 ```bash
 codex exec --ephemeral --skip-git-repo-check \
-  'Reply with exactly: llm-notary'
+  'Reply with exactly: notary'
 ```
 
 To stop using the proxy, restore your previous `model_provider` setting
-(normally `openai`) and remove the `model_providers.llm-notary-chatgpt` block.
+(normally `openai`) and remove the `model_providers.notary-chatgpt` block.
 This does not sign you out of ChatGPT.
 
 A verified trace proves that the request reached `chatgpt.com` over the

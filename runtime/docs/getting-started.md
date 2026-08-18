@@ -4,7 +4,7 @@ Install the command-line tools to connect an SDK, coding agent, server, or
 automated workflow. The daemon keeps private capture material on your machine;
 the CLI is a short-lived client for its loopback REST API.
 
-LLM Notary is pre-release and does not yet promise stable compatibility or file
+Notary is pre-release and does not yet promise stable compatibility or file
 formats. The website's `latest` channel is deliberately moving: each successful
 publication replaces the previous release.
 
@@ -21,7 +21,7 @@ curl -fsSL https://notary.exalto.ai/install.sh | sh
 
 The installer selects the current complete `latest` build, verifies the selected
 archive against its published SHA-256 value, and places `notaryd` and
-`notaryctl` in `~/.local/bin`. Set `LLM_NOTARY_INSTALL_DIR` to choose another
+`notaryctl` in `~/.local/bin`. Set `NOTARY_INSTALL_DIR` to choose another
 destination. The checksum detects corruption in transit or storage; it is not
 an independent signature because the archive and checksum share a publisher.
 
@@ -104,7 +104,7 @@ target. Inspect the existing skill before explicitly replacing those files:
 notaryctl skill install --target all --force
 ```
 
-Re-run the install command after updating LLM Notary so the installed skill
+Re-run the install command after updating Notary so the installed skill
 matches the local CLI. The portable source is committed at
 [`skills/notary`](../skills/notary/SKILL.md), and the
 [coding-agent playbook](agent-playbook.md) explains its safety and consent
@@ -210,7 +210,7 @@ OpenAI Responses request:
 curl http://127.0.0.1:8787/openai/v1/responses \
   -H "Authorization: Bearer $OPENAI_API_KEY" \
   -H 'Content-Type: application/json' \
-  -d '{"model":"YOUR_RESPONSES_MODEL","input":"Reply with exactly: llm-notary"}'
+  -d '{"model":"YOUR_RESPONSES_MODEL","input":"Reply with exactly: notary"}'
 ```
 
 Use a model available to the provider account. See [Provider and agent

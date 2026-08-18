@@ -88,13 +88,13 @@ ExecStart=/usr/local/bin/notaryd --config /etc/notary/config.toml
 <array>
   <string>/usr/local/bin/notaryd</string>
   <string>--config</string>
-  <string>/Users/example/Library/Application Support/llm-notary/config.toml</string>
+  <string>/Users/example/Library/Application Support/notary/config.toml</string>
 </array>
 ```
 
 ```powershell
 # Windows Service Control Manager
-sc.exe create LLMNotary binPath= '"C:\Program Files\LLM Notary\notaryd.exe" --config "C:\ProgramData\LLM Notary\config.toml"'
+sc.exe create Notary binPath= '"C:\Program Files\Notary\notaryd.exe" --config "C:\ProgramData\Notary\config.toml"'
 ```
 
 The smallest useful explicit configuration is:
@@ -229,7 +229,7 @@ for the password instead of accepting it as a command-line value. For example:
 caddy hash-password --algorithm argon2id
 ```
 
-Copy the complete output into `password_hash`. LLM Notary rejects plaintext,
+Copy the complete output into `password_hash`. Notary rejects plaintext,
 bcrypt, and malformed values. The Argon2id requirement follows current
 [OWASP password-storage guidance](https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html);
 the prompted Caddy command is one convenient generator, not a runtime
@@ -250,7 +250,7 @@ export NOTARYD_ADMIN_ORIGIN=http://127.0.0.1:8788
 
 curl --fail-with-body "$NOTARYD_ADMIN_ORIGIN/healthz"
 curl --fail-with-body "$NOTARYD_ADMIN_ORIGIN/readyz"
-curl --fail-with-body "$NOTARYD_ADMIN_ORIGIN/openapi.json" > /tmp/llm-notary-openapi.json
+curl --fail-with-body "$NOTARYD_ADMIN_ORIGIN/openapi.json" > /tmp/notary-openapi.json
 curl --fail-with-body "$NOTARYD_ADMIN_ORIGIN/v1/status"
 ```
 

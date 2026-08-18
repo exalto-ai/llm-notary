@@ -581,7 +581,7 @@ mod tests {
         let intake_key = storage
             .committed_staging_object_key("integration-user", &job_id, 0)
             .expect("intake key");
-        let payload = b"LLM Notary private intake integration check";
+        let payload = b"Notary private intake integration check";
         let sha256 = hex::encode(Sha256::digest(payload));
         let upload = storage
             .presign_upload(

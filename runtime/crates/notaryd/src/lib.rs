@@ -1,4 +1,4 @@
-//! Local LLM Notary proxy and administration daemon.
+//! Local Notary proxy and administration daemon.
 //!
 //! The hosted public origin remains a distribution default in this package.
 //! Evidence formats and Proxy-TLS protocol behavior are provided by
@@ -30,7 +30,7 @@ pub use notary_updater as update;
 #[derive(Parser, Debug)]
 #[command(
     name = "notaryd",
-    about = "Run the LLM Notary proxy and administration daemon",
+    about = "Run the Notary proxy and administration daemon",
     version,
     long_version = format!(
         "{} ({})",

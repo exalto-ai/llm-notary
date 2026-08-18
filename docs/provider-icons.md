@@ -5,7 +5,7 @@ presentation-only provider mappings. Their assets are deliberately copied into
 each workspace so the public runtime has no dependency on the hosted site. The
 mappings read the existing provider field; they never infer a provider from a
 model name, hostname, or namespaced OpenRouter model slug. Unknown and missing
-values use the neutral LLM Notary fallback mark while retaining the supplied
+values use the neutral Notary fallback mark while retaining the supplied
 provider text when one is present.
 
 All four provider assets are bundled into both built applications. They are
@@ -23,5 +23,5 @@ assets from third-party hosts.
 | OpenRouter | `platform/web/src/assets/providers/openrouter.svg` | `runtime/apps/admin-dashboard/src/assets/providers/openrouter.svg` | Current glyph from OpenRouter's official [v2 brand asset](https://openrouter.ai/brand/v2/openrouter-glyph-light.svg), cross-checked against its [2026 brand refresh](https://openrouter.ai/blog/announcements/brand-refresh/) and official [documentation repository](https://github.com/OpenRouterTeam/docs/blob/main/assets/favicon-v2.svg). No standalone asset license is published; OpenRouter retains its rights under its [Terms of Service](https://openrouter.ai/terms). The glyph identifies only an OpenRouter-authenticated record, even when model metadata names an upstream vendor. |
 
 Provider names, logos, and trademarks belong to their respective owners. The
-assets are not part of LLM Notary's own brand and must not be reused to imply a
+assets are not part of Notary's own brand and must not be reused to imply a
 provider partnership or endorsement.

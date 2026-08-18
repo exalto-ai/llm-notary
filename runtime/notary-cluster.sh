@@ -66,7 +66,7 @@ init() {
   s3_secret=$(openssl rand -hex 24)
   printf '%s' "$admin_password" > "$state_dir/secrets/admin-password"
   printf '%s' "$postgres_password" > "$state_dir/secrets/postgres-password"
-  printf '%s' "postgresql://llm_notary:${postgres_password}@postgres:5432/llm_notary" > "$state_dir/secrets/postgres-url"
+  printf '%s' "postgresql://notary:${postgres_password}@postgres:5432/notary" > "$state_dir/secrets/postgres-url"
   printf '%s' 'notary' > "$state_dir/secrets/s3-access-key"
   printf '%s' "$s3_secret" > "$state_dir/secrets/s3-secret-key"
   openssl rand 32 > "$state_dir/secrets/cluster-vault.key"

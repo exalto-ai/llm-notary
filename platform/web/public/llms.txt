@@ -4,7 +4,7 @@
 
 ## Documentation
 
-- [Overview](%PUBLIC_ORIGIN%/docs): Capture, deferred notarization, portable packages, and shared verified sessions.
+- [Overview](%PUBLIC_ORIGIN%/docs): The Trace lifecycle: capture, deferred notarization, portable packages, and shared notarized Traces.
 - [Trust and guarantees](%PUBLIC_ORIGIN%/docs/how-it-works): The exact provenance claim, participants, authenticated versus observed data, and limits.
 - [Install options](%PUBLIC_ORIGIN%/docs/getting-started): Choose the guided Apple silicon macOS app or install the CLI and local service for SDKs, coding agents, servers, and automation.
 - [Pricing](%PUBLIC_ORIGIN%/#/pricing): Monthly capture, notarization, and trace-storage plans, plus additional notarization credits.

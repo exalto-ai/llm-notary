@@ -40,15 +40,15 @@ services:
   postgres:
     image: postgres:17.7-alpine
     environment:
-      POSTGRES_DB: llm_notary
-      POSTGRES_USER: llm_notary
+      POSTGRES_DB: notary
+      POSTGRES_USER: notary
       POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
     secrets:
       - postgres_password
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U llm_notary -d llm_notary"]
+      test: ["CMD-SHELL", "pg_isready -U notary -d notary"]
       interval: 5s
       timeout: 3s
       retries: 20

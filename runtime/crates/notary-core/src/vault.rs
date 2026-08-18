@@ -482,17 +482,17 @@ fn read_os_key() -> Result<[u8; 32]> {
     let bytes = hex::decode(
         entry
             .get_password()
-            .context("reading LLM Notary key from the OS vault")?,
+            .context("reading Notary key from the OS vault")?,
     )?;
     bytes
         .try_into()
-        .map_err(|_| anyhow::anyhow!("OS vault returned an invalid LLM Notary key"))
+        .map_err(|_| anyhow::anyhow!("OS vault returned an invalid Notary key"))
 }
 
 fn write_os_key(key: &[u8; 32]) -> Result<()> {
     keyring::Entry::new(SERVICE, "vault-key")?
         .set_password(&hex::encode(key))
-        .context("storing the LLM Notary key in the OS vault")
+        .context("storing the Notary key in the OS vault")
 }
 
 fn read_child_key_from_stdin() -> Result<[u8; 32]> {

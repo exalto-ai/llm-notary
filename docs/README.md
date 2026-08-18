@@ -1,6 +1,6 @@
-# LLM Notary documentation
+# Notary documentation
 
-LLM Notary has separate private product and public runtime documentation:
+Notary has separate private product and public runtime documentation:
 
 - This directory contains hosted-product and contributor references.
 - [`runtime/docs`](../runtime/docs/README.md) contains public runtime guidance.

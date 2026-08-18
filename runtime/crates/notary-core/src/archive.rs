@@ -232,7 +232,7 @@ fn write_trace_package_archive<W: Write + Seek, V: AsRef<[u8]>>(
             )
             .with_context(|| format!("writing archive entry {name}"))?;
     }
-    writer.finish().context("finalizing trace package archive")
+    writer.finish().context("completing trace package archive")
 }
 
 fn archive_capacity(package_size: u64, manifest_size: u64) -> Result<u64> {
@@ -294,7 +294,7 @@ pub fn extract_trace_package_archive(
             .with_context(|| format!("extracting archive entry {name}"))?;
         }
         fs::rename(&staging, output_dir)
-            .with_context(|| format!("finalizing extraction {}", output_dir.display()))
+            .with_context(|| format!("completing extraction {}", output_dir.display()))
     })();
     if result.is_err() {
         let _ = fs::remove_dir_all(&staging);

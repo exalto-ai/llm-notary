@@ -1,6 +1,6 @@
-# LLM Notary runtime
+# Notary runtime
 
-This directory is the independently buildable public runtime for LLM Notary. It contains the local proxy daemon, its thin REST CLI, the generic remote notary, the local dashboard, signed updater logic, protocol/evidence contracts, and the pinned TLSNotary dependencies.
+This directory is the independently buildable public runtime for Notary. It contains the local proxy daemon, its thin REST CLI, the generic remote notary, the local dashboard, signed updater logic, protocol/evidence contracts, and the pinned TLSNotary dependencies.
 
 It deliberately does not contain the server-side account, credit, billing,
 hosted-admission, upload, or public-website implementations. The daemon and

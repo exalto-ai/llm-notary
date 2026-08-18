@@ -1,6 +1,6 @@
 # Runtime architecture and trust boundaries
 
-LLM Notary makes one narrow provenance claim: the disclosed HTTP bytes came
+Notary makes one narrow provenance claim: the disclosed HTTP bytes came
 from a TLS connection to a named provider, as witnessed by a selected notary
 key, and the included OpenTelemetry trace is the deterministic normalization
 of those bytes.
@@ -20,11 +20,11 @@ seams, but those implementations are not part of this workspace.
 | `notaryctl` | only API responses requested by the user | none | Calls the daemon's versioned administration API |
 | Local dashboard | only safe metadata store fields and deliberately opened notarized disclosures | browser session preference | Uses the same administration API as the CLI |
 | `notary-server` | no | signing key | Resolves the provider, relays encrypted TLS records, witnesses sessions, and completes proof work |
-| Model provider | yes | provider-owned | Serves an ordinary HTTPS request without an LLM Notary integration |
+| Model provider | yes | provider-owned | Serves an ordinary HTTPS request without a Notary integration |
 | Artifact backend | encrypted capture or disclosed package bytes | filesystem or private S3-compatible objects | Retains immutable artifacts after size and SHA-256 validation |
 | Independent verifier | disclosed package contents | chosen trust policy | Verifies a portable `.llmtrace` without contacting the provider or notary |
 
-The local daemon is the only LLM Notary runtime component that sees provider
+The local daemon is the only Notary runtime component that sees provider
 credentials, prompts, and response plaintext. The remote notary learns the
 selected provider hostname, ciphertext sizes, timing, and protocol metadata,
 but it must not receive credential values or application plaintext.
@@ -180,7 +180,7 @@ for hosted-directory rotation and revocation.
 
 ## What the runtime does not prove
 
-LLM Notary does not establish:
+Notary does not establish:
 
 - that a response is true, correct, safe, complete, or useful;
 - that a named person authored a prompt;
