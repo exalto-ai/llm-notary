@@ -458,15 +458,6 @@ fn hosted_trace_status(origin: &ApiOrigin, trace: HostedTrace) -> Result<ShareSt
     })
 }
 
-fn share_status_http_error(status: StatusCode) -> Option<ShareStatusError> {
-    match status {
-        StatusCode::NOT_FOUND => Some(ShareStatusError::NotFound),
-        StatusCode::UNAUTHORIZED => Some(ShareStatusError::Authentication),
-        status if !status.is_success() => Some(ShareStatusError::Unavailable),
-        _ => None,
-    }
-}
-
 async fn share_mutation_response(
     response: Response,
 ) -> std::result::Result<Response, ShareStatusError> {
@@ -987,37 +978,72 @@ mod tests {
         );
     }
 
-    #[test]
-    fn sharing_status_preserves_not_found_authentication_and_outage_errors() {
-        assert!(matches!(
-            share_status_http_error(StatusCode::NOT_FOUND),
-            Some(ShareStatusError::NotFound)
-        ));
-        assert!(matches!(
-            share_status_http_error(StatusCode::UNAUTHORIZED),
-            Some(ShareStatusError::Authentication)
-        ));
-        assert!(matches!(
-            share_status_http_error(StatusCode::BAD_GATEWAY),
-            Some(ShareStatusError::Unavailable)
-        ));
-        assert!(share_status_http_error(StatusCode::OK).is_none());
-        assert_eq!(
-            HostedShareError::classify(
-                StatusCode::PAYMENT_REQUIRED,
-                "trace_storage_quota_exceeded",
-            ),
-            Some(HostedShareError::StorageQuotaExceeded)
-        );
-        assert_eq!(
-            HostedShareError::classify(
-                StatusCode::TOO_MANY_REQUESTS,
-                "trace_password_change_rate_limited",
-            ),
-            Some(HostedShareError::PasswordRateLimited)
-        );
-        assert!(
-            HostedShareError::classify(StatusCode::BAD_GATEWAY, "untrusted_remote_code").is_none()
-        );
+    #[tokio::test]
+    async fn share_response_parser_preserves_only_allowlisted_remote_errors() {
+        async fn response(Path(case): Path<String>) -> (StatusCode, Json<serde_json::Value>) {
+            let (status, code) = match case.as_str() {
+                "billing" => (StatusCode::PAYMENT_REQUIRED, "billing_review"),
+                "quota" => (StatusCode::PAYMENT_REQUIRED, "trace_storage_quota_exceeded"),
+                "capacity" => (StatusCode::TOO_MANY_REQUESTS, "trace_password_capacity"),
+                "rate" => (
+                    StatusCode::TOO_MANY_REQUESTS,
+                    "trace_password_change_rate_limited",
+                ),
+                "expiry" => (
+                    StatusCode::BAD_REQUEST,
+                    "trace_reactivation_expiry_required",
+                ),
+                "reactivate" => (StatusCode::CONFLICT, "trace_reactivation_required"),
+                "missing" => (StatusCode::NOT_FOUND, "sensitive_remote_detail"),
+                "auth" => (StatusCode::UNAUTHORIZED, "sensitive_remote_detail"),
+                _ => (StatusCode::BAD_GATEWAY, "untrusted_remote_code"),
+            };
+            (
+                status,
+                Json(serde_json::json!({
+                    "error": code,
+                    "message": "sensitive remote detail"
+                })),
+            )
+        }
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let app = Router::new().route("/{case}", get(response));
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let client = http_client_builder().build().unwrap();
+        for (case, expected) in [
+            ("billing", HostedShareError::BillingReview),
+            ("quota", HostedShareError::StorageQuotaExceeded),
+            ("capacity", HostedShareError::PasswordCapacity),
+            ("rate", HostedShareError::PasswordRateLimited),
+            ("expiry", HostedShareError::ReactivationExpiryRequired),
+            ("reactivate", HostedShareError::ReactivationRequired),
+        ] {
+            let error = share_mutation_response(
+                client.get(format!("{origin}/{case}")).send().await.unwrap(),
+            )
+            .await
+            .unwrap_err();
+            assert!(matches!(error, ShareStatusError::Hosted(actual) if actual == expected));
+        }
+        for (case, expected) in [
+            ("missing", "not_found"),
+            ("auth", "authentication"),
+            ("unknown", "unavailable"),
+        ] {
+            let error = share_mutation_response(
+                client.get(format!("{origin}/{case}")).send().await.unwrap(),
+            )
+            .await
+            .unwrap_err();
+            assert!(matches!(
+                (error, expected),
+                (ShareStatusError::NotFound, "not_found")
+                    | (ShareStatusError::Authentication, "authentication")
+                    | (ShareStatusError::Unavailable, "unavailable")
+            ));
+        }
+        server.abort();
     }
 }
