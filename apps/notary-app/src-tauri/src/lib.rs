@@ -79,7 +79,7 @@ async fn get_desktop_state(
     match read_admin_status().await {
         Ok(status) => {
             let daemon_build_id = status.build_id.clone();
-            let message = (daemon_build_id != env!("LLM_NOTARY_BUILD_ID")).then(|| {
+            let message = (daemon_build_id != env!("NOTARY_BUILD_ID")).then(|| {
                 "The app and running local service are different builds. Update or restart the separately installed service before relying on new client behavior."
                     .into()
             });
@@ -97,7 +97,7 @@ async fn get_desktop_state(
                 vault_locked: false,
                 version: Some(status.version),
                 app_version: env!("CARGO_PKG_VERSION").into(),
-                app_build_id: env!("LLM_NOTARY_BUILD_ID").into(),
+                app_build_id: env!("NOTARY_BUILD_ID").into(),
                 daemon_build_id: Some(daemon_build_id),
                 proxy_listener: status.proxy_listener,
                 admin_listener: status.admin_listener,
@@ -119,7 +119,7 @@ async fn get_desktop_state(
                 vault_mode: local_mode,
                 version: None,
                 app_version: env!("CARGO_PKG_VERSION").into(),
-                app_build_id: env!("LLM_NOTARY_BUILD_ID").into(),
+                app_build_id: env!("NOTARY_BUILD_ID").into(),
                 daemon_build_id: None,
                 proxy_listener: "127.0.0.1:8787".into(),
                 admin_listener: "127.0.0.1:8788".into(),

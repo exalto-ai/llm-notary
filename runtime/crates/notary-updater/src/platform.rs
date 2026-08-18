@@ -21,7 +21,7 @@ use crate::{
 };
 
 #[cfg(windows)]
-pub(crate) const WINDOWS_RESULT_NAME: &str = ".notary-update-result.json";
+pub(crate) const WINDOWS_RESULT_NAME: &str = ".notary-runtime-update-result.json";
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]

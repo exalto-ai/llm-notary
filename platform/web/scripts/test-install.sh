@@ -6,7 +6,7 @@ trap 'rm -rf "$test_root"' EXIT INT TERM
 
 build_id="0123456789abcdef0123456789abcdef01234567-test"
 version="0.1.0"
-fixture_root="$test_root/downloads/cli"
+fixture_root="$test_root/downloads/releases"
 build_root="$fixture_root/builds/$build_id"
 package="notary-runtime-${version}-linux-x86_64"
 archive="$package.tar.gz"
@@ -36,8 +36,8 @@ printf '%s\n' \
 chmod 0755 "$test_root/fake-bin/uname"
 
 PATH="$test_root/fake-bin:$PATH" \
-  LLM_NOTARY_DOWNLOAD_ROOT="file://$test_root/downloads/cli" \
-  LLM_NOTARY_INSTALL_DIR="$test_root/bin" \
+  NOTARY_DOWNLOAD_ROOT="file://$test_root/downloads/releases" \
+  NOTARY_INSTALL_DIR="$test_root/bin" \
   sh "$(dirname "$0")/../public/install.sh"
 
 test "$("$test_root/bin/notaryctl")" = "notaryctl fixture"
@@ -45,8 +45,8 @@ test "$("$test_root/bin/notaryd")" = "notaryd fixture"
 
 printf 'tampered\n' >> "$build_root/$archive"
 if PATH="$test_root/fake-bin:$PATH" \
-    LLM_NOTARY_DOWNLOAD_ROOT="file://$test_root/downloads/cli" \
-    LLM_NOTARY_INSTALL_DIR="$test_root/tampered-bin" \
+    NOTARY_DOWNLOAD_ROOT="file://$test_root/downloads/releases" \
+    NOTARY_INSTALL_DIR="$test_root/tampered-bin" \
     sh "$(dirname "$0")/../public/install.sh" >"$test_root/tampered.out" 2>&1; then
   echo "installer accepted an archive with the wrong checksum" >&2
   exit 1
@@ -55,8 +55,8 @@ grep -q 'Checksum verification failed' "$test_root/tampered.out"
 
 printf '../escape 0.1.0\n' > "$fixture_root/latest"
 if PATH="$test_root/fake-bin:$PATH" \
-    LLM_NOTARY_DOWNLOAD_ROOT="file://$test_root/downloads/cli" \
-    LLM_NOTARY_INSTALL_DIR="$test_root/escaped-bin" \
+    NOTARY_DOWNLOAD_ROOT="file://$test_root/downloads/releases" \
+    NOTARY_INSTALL_DIR="$test_root/escaped-bin" \
     sh "$(dirname "$0")/../public/install.sh" >"$test_root/escape.out" 2>&1; then
   echo "installer accepted an unsafe build identifier" >&2
   exit 1
@@ -72,8 +72,8 @@ printf '%s\n' \
   'esac' > "$test_root/fake-bin/uname"
 chmod 0755 "$test_root/fake-bin/uname"
 if PATH="$test_root/fake-bin:$PATH" \
-    LLM_NOTARY_DOWNLOAD_ROOT="file://$test_root/downloads/cli" \
-    LLM_NOTARY_INSTALL_DIR="$test_root/intel-mac-bin" \
+    NOTARY_DOWNLOAD_ROOT="file://$test_root/downloads/releases" \
+    NOTARY_INSTALL_DIR="$test_root/intel-mac-bin" \
     sh "$(dirname "$0")/../public/install.sh" >"$test_root/intel-mac.out" 2>&1; then
   echo "installer accepted an Intel Mac" >&2
   exit 1

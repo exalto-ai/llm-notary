@@ -47,9 +47,9 @@ jobs:
     needs: config
     timeout-minutes: 90
     env:
-      LLM_NOTARY_PUBLIC_ORIGIN: ${{ vars.LLM_NOTARY_PUBLIC_ORIGIN || 'https://notary.exalto.ai' }}
-      LLM_NOTARY_BUILD_ID: ${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
-      LLM_NOTARY_UPDATES_ENABLED: ${{ github.ref == 'refs/heads/main' && inputs.channel == 'latest' && '1' || '0' }}
+      NOTARY_PUBLIC_ORIGIN: ${{ vars.LLM_NOTARY_PUBLIC_ORIGIN || 'https://notary.exalto.ai' }}
+      NOTARY_BUILD_ID: ${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+      NOTARY_UPDATES_ENABLED: ${{ github.ref == 'refs/heads/main' && inputs.channel == 'latest' && '1' || '0' }}
     strategy:
       fail-fast: false
       matrix:
@@ -101,8 +101,8 @@ jobs:
           if [[ "$TARGET" == *windows* ]]; then suffix=".exe"; fi
           cp "target/$TARGET/release/notaryctl${suffix}" "$folder/"
           cp "target/$TARGET/release/notaryd${suffix}" "$folder/"
-          "target/$TARGET/release/notaryctl${suffix}" --version | grep -F "$LLM_NOTARY_BUILD_ID" >/dev/null
-          "target/$TARGET/release/notaryd${suffix}" --version | grep -F "$LLM_NOTARY_BUILD_ID" >/dev/null
+          "target/$TARGET/release/notaryctl${suffix}" --version | grep -F "$NOTARY_BUILD_ID" >/dev/null
+          "target/$TARGET/release/notaryd${suffix}" --version | grep -F "$NOTARY_BUILD_ID" >/dev/null
           cp runtime/LICENSE-APACHE runtime/LICENSE-MIT runtime/THIRD-PARTY-NOTICES.md "$folder/"
           if [[ "$ARCHIVE" == "zip" ]]; then
             archive="${folder}.zip"
@@ -172,7 +172,7 @@ jobs:
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends minisign
-          channel_url="$PUBLIC_ORIGIN/downloads/cli/channels/$CHANNEL.json"
+          channel_url="$PUBLIC_ORIGIN/downloads/releases/channels/$CHANNEL.json"
           status="$(curl --silent --show-error --location \
             --retry 3 --retry-all-errors --connect-timeout 5 --max-time 20 \
             --output "$RUNNER_TEMP/current-channel.json" \
@@ -181,7 +181,7 @@ jobs:
             revision=1
           elif test "$status" = 200; then
             test "$(jq -r .schema_version "$RUNNER_TEMP/current-channel.json")" = \
-              llm-notary/release-channel-envelope/v1
+              notary/release-channel-envelope/v1
             jq -er .signed "$RUNNER_TEMP/current-channel.json" \
               | base64 --decode > "$RUNNER_TEMP/current-channel.payload.json"
             jq -er .signature "$RUNNER_TEMP/current-channel.json" \
@@ -190,7 +190,7 @@ jobs:
             minisign -Vm "$RUNNER_TEMP/current-channel.payload.json" \
               -p "$RUNNER_TEMP/updater.pub" -x "$RUNNER_TEMP/current-channel.minisig"
             test "$(jq -r .schema_version "$RUNNER_TEMP/current-channel.payload.json")" = \
-              llm-notary/release-channel/v1
+              notary/release-channel/v1
             test "$(jq -r .channel "$RUNNER_TEMP/current-channel.payload.json")" = "$CHANNEL"
             current="$(jq -er '.channel_revision | select(type == "number" and floor == . and . > 0)' \
               "$RUNNER_TEMP/current-channel.payload.json")"
@@ -224,7 +224,7 @@ jobs:
             --channel "$CHANNEL" \
             --revision "$CHANNEL_REVISION" \
             --manifest release/release.json \
-            --manifest-url "$PUBLIC_ORIGIN/downloads/cli/builds/$BUILD_ID/release.json" \
+            --manifest-url "$PUBLIC_ORIGIN/downloads/releases/builds/$BUILD_ID/release.json" \
             --signature release/release.json.sig \
             --output release/channel.payload.json
           npm --prefix apps/notary-app exec -- tauri signer sign "$(pwd)/release/channel.payload.json"
@@ -319,8 +319,8 @@ jobs:
             ""|*[!0-9]*) echo "release build has an invalid attempt" >&2; exit 1 ;;
           esac
           test "$artifact_attempt" -gt 0
-          test "$(jq -r .schema_version release/channel.json)" = "llm-notary/release-channel-envelope/v1"
-          prefix="cli/builds/$build_id"
+          test "$(jq -r .schema_version release/channel.json)" = "notary/release-channel-envelope/v1"
+          prefix="releases/builds/$build_id"
           {
             echo "version=$version"
             echo "build_id=$build_id"
@@ -436,14 +436,14 @@ jobs:
           set -euo pipefail
           printf '%s %s\n' "$BUILD_ID" "$VERSION" > "$RUNNER_TEMP/current"
           cp release/channel.json "$RUNNER_TEMP/channel.json"
-          # Keep the legacy text pointer for existing installers. New clients
-          # use the signed-manifest JSON pointer, which is moved last.
-          aws s3 cp "$RUNNER_TEMP/current" "s3://$BUCKET/cli/$CHANNEL" \
+          # install.sh reads the plain-text pointer; updating clients read the
+          # signed channel manifest, which is moved last.
+          aws s3 cp "$RUNNER_TEMP/current" "s3://$BUCKET/releases/$CHANNEL" \
             --endpoint-url "$ENDPOINT" \
             --cache-control 'no-store' \
             --content-type 'text/plain; charset=utf-8' \
             --only-show-errors
-          aws s3 cp "$RUNNER_TEMP/channel.json" "s3://$BUCKET/cli/channels/$CHANNEL.json" \
+          aws s3 cp "$RUNNER_TEMP/channel.json" "s3://$BUCKET/releases/channels/$CHANNEL.json" \
             --endpoint-url "$ENDPOINT" \
             --cache-control 'no-store' \
             --content-type 'application/json; charset=utf-8' \
@@ -451,21 +451,21 @@ jobs:
           expected="$(cat "$RUNNER_TEMP/current")"
           actual="$(curl --fail --silent --show-error --location \
             --retry 30 --retry-all-errors --retry-delay 2 --retry-max-time 90 \
-            "$PUBLIC_BUCKET_ORIGIN/cli/$CHANNEL")"
+            "$PUBLIC_BUCKET_ORIGIN/releases/$CHANNEL")"
           test "$actual" = "$expected"
           curl --fail --silent --show-error --location \
             --retry 30 --retry-all-errors --retry-delay 2 --retry-max-time 90 \
-            "$PUBLIC_BUCKET_ORIGIN/cli/channels/$CHANNEL.json" \
+            "$PUBLIC_BUCKET_ORIGIN/releases/channels/$CHANNEL.json" \
             -o "$RUNNER_TEMP/published-channel.json"
           cmp "$RUNNER_TEMP/channel.json" "$RUNNER_TEMP/published-channel.json"
           if test "$CHANNEL" = latest; then
             website="$(curl --fail --silent --show-error --location \
               --retry 30 --retry-all-errors --retry-delay 2 --retry-max-time 90 \
-              "https://notary.exalto.ai/downloads/cli/$CHANNEL")"
+              "https://notary.exalto.ai/downloads/releases/$CHANNEL")"
             test "$website" = "$expected"
             curl --fail --silent --show-error --location \
               --retry 30 --retry-all-errors --retry-delay 2 --retry-max-time 90 \
-              "https://notary.exalto.ai/downloads/cli/channels/$CHANNEL.json" \
+              "https://notary.exalto.ai/downloads/releases/channels/$CHANNEL.json" \
               -o "$RUNNER_TEMP/website-channel.json"
             cmp "$RUNNER_TEMP/channel.json" "$RUNNER_TEMP/website-channel.json"
           fi

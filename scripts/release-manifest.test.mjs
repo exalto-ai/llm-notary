@@ -69,7 +69,7 @@ test('channel pointer binds the exact immutable manifest', async () => {
   const manifestFile = path.join(directory, 'release.json');
   const signatureFile = path.join(directory, 'release.json.sig');
   await writeFile(manifestFile, JSON.stringify({
-    schema_version: 'llm-notary/release/v1',
+    schema_version: 'notary/release/v1',
     build_id: 'a'.repeat(40) + '-123-1',
   }));
   await writeFile(signatureFile, signature);
@@ -77,7 +77,7 @@ test('channel pointer binds the exact immutable manifest', async () => {
     channel: 'latest',
     channelRevision: 123001,
     manifestFile,
-    manifestUrl: 'https://notary.exalto.ai/downloads/cli/builds/build/release.json',
+    manifestUrl: 'https://notary.exalto.ai/downloads/releases/builds/build/release.json',
     manifestSignatureFile: signatureFile,
   });
   assert.equal(pointer.channel, 'latest');
@@ -91,7 +91,7 @@ test('channel envelope preserves the exact signed payload bytes', async () => {
   const directory = await fixture();
   const payloadFile = path.join(directory, 'channel.payload.json');
   const signatureFile = path.join(directory, 'channel.payload.json.sig');
-  const payload = '{"schema_version":"llm-notary/release-channel/v1","channel":"latest","channel_revision":123001}\n';
+  const payload = '{"schema_version":"notary/release-channel/v1","channel":"latest","channel_revision":123001}\n';
   await writeFile(payloadFile, payload);
   await writeFile(signatureFile, signature);
   const envelope = await createChannelEnvelope({

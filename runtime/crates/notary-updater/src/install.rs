@@ -23,7 +23,7 @@ use crate::{
     release::{download_artifact, platform_name, update_http_client, validate_identifier},
     storage,
 };
-const JOURNAL_NAME: &str = ".notary-update.json";
+const JOURNAL_NAME: &str = ".notary-runtime-update.json";
 
 const CLI_BACKUP_NAME: &str = ".notaryctl.update-backup";
 
@@ -41,10 +41,10 @@ struct UpdateJournal {
 #[serde(rename_all = "snake_case")]
 enum JournalPhase {
     Prepared,
-    ReplacingDaemon,
-    DaemonReplaced,
-    ReplacingCli,
-    CliReplaced,
+    ReplacingNotaryd,
+    NotarydReplaced,
+    ReplacingNotaryctl,
+    NotaryctlReplaced,
 }
 
 #[derive(Debug)]
@@ -151,7 +151,7 @@ async fn install_verified_release(
         .get(platform)
         .with_context(|| format!("the release has no payloads for {platform}"))?;
     let staging = tempfile::Builder::new()
-        .prefix(".notary-update-")
+        .prefix(".notary-runtime-update-")
         .tempdir_in(&install.directory)
         .with_context(|| {
             format!(
@@ -261,21 +261,21 @@ pub(crate) fn apply_update_transaction(
     );
     write_journal(install, build_id, JournalPhase::Prepared)?;
     hard_link_backup(&install.daemon, &install.daemon_backup)?;
-    write_journal(install, build_id, JournalPhase::ReplacingDaemon)?;
+    write_journal(install, build_id, JournalPhase::ReplacingNotaryd)?;
     if let Err(error) = replace_file(daemon_candidate, &install.daemon) {
         let _ = recover_interrupted_update(install);
         return Err(error).context("installing the new notaryd");
     }
     sync_directory(&install.directory)?;
-    write_journal(install, build_id, JournalPhase::DaemonReplaced)?;
+    write_journal(install, build_id, JournalPhase::NotarydReplaced)?;
     hard_link_backup(&install.cli, &install.cli_backup)?;
-    write_journal(install, build_id, JournalPhase::ReplacingCli)?;
+    write_journal(install, build_id, JournalPhase::ReplacingNotaryctl)?;
     if let Err(error) = replace_file(cli_candidate, &install.cli) {
         let _ = recover_interrupted_update(install);
         return Err(error).context("installing the new notaryctl");
     }
     sync_directory(&install.directory)?;
-    write_journal(install, build_id, JournalPhase::CliReplaced)?;
+    write_journal(install, build_id, JournalPhase::NotaryctlReplaced)?;
     if let Err(error) = ensure_candidate_build(&install.cli, build_id, "notaryctl")
         .and_then(|_| ensure_candidate_build(&install.daemon, build_id, "notaryd"))
     {
@@ -370,14 +370,14 @@ pub(crate) fn recover_interrupted_update(install: &InstallPaths) -> Result<()> {
     validate_identifier(&journal.build_id, "journal build ID")?;
     match journal.phase {
         JournalPhase::Prepared => {}
-        JournalPhase::ReplacingDaemon | JournalPhase::DaemonReplaced => {
+        JournalPhase::ReplacingNotaryd | JournalPhase::NotarydReplaced => {
             restore_backup(&install.daemon_backup, &install.daemon)?;
         }
-        JournalPhase::ReplacingCli => {
+        JournalPhase::ReplacingNotaryctl => {
             restore_backup(&install.cli_backup, &install.cli)?;
             restore_backup(&install.daemon_backup, &install.daemon)?;
         }
-        JournalPhase::CliReplaced => {
+        JournalPhase::NotaryctlReplaced => {
             if ensure_candidate_build(&install.cli, &journal.build_id, "notaryctl").is_ok()
                 && ensure_candidate_build(&install.daemon, &journal.build_id, "notaryd").is_ok()
             {
@@ -522,7 +522,7 @@ mod tests {
         executable(&new_daemon, "notaryd", "new-build");
         replace_file(&new_cli, &install.cli).unwrap();
         replace_file(&new_daemon, &install.daemon).unwrap();
-        write_journal(&install, "new-build", JournalPhase::ReplacingCli).unwrap();
+        write_journal(&install, "new-build", JournalPhase::ReplacingNotaryctl).unwrap();
 
         recover_interrupted_update(&install).unwrap();
 
@@ -545,7 +545,7 @@ mod tests {
         executable(&new_daemon, "notaryd", "new-build");
         replace_file(&new_cli, &install.cli).unwrap();
         replace_file(&new_daemon, &install.daemon).unwrap();
-        write_journal(&install, "new-build", JournalPhase::CliReplaced).unwrap();
+        write_journal(&install, "new-build", JournalPhase::NotaryctlReplaced).unwrap();
 
         recover_interrupted_update(&install).unwrap();
 
@@ -554,6 +554,46 @@ mod tests {
         assert!(path_is_absent(&install.journal).unwrap());
         assert!(path_is_absent(&install.cli_backup).unwrap());
         assert!(path_is_absent(&install.daemon_backup).unwrap());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn recovery_rejects_a_retired_update_journal() {
+        let directory = tempfile::tempdir().unwrap();
+        let install = InstallPaths::from_directory(directory.path());
+        executable(&install.cli, "notaryctl", "old-build");
+        executable(&install.daemon, "notaryd", "old-build");
+        fs::write(
+            &install.journal,
+            br#"{"schema_version":"llm-notary/update-journal/v1","build_id":"build","phase":"prepared"}"#,
+        )
+        .unwrap();
+
+        let error = recover_interrupted_update(&install).unwrap_err();
+        assert!(error.to_string().contains("journal schema is unsupported"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn journal_phases_use_the_canonical_runtime_names() {
+        let phases = [
+            JournalPhase::Prepared,
+            JournalPhase::ReplacingNotaryd,
+            JournalPhase::NotarydReplaced,
+            JournalPhase::ReplacingNotaryctl,
+            JournalPhase::NotaryctlReplaced,
+        ]
+        .map(|phase| serde_json::to_string(&phase).unwrap());
+        assert_eq!(
+            phases,
+            [
+                "\"prepared\"",
+                "\"replacing_notaryd\"",
+                "\"notaryd_replaced\"",
+                "\"replacing_notaryctl\"",
+                "\"notaryctl_replaced\"",
+            ]
+        );
     }
 
     #[cfg(unix)]

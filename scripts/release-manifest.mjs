@@ -3,9 +3,9 @@ import { readFile, stat, writeFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 import path from 'node:path';
 
-export const RELEASE_SCHEMA = 'llm-notary/release/v1';
-export const CHANNEL_SCHEMA = 'llm-notary/release-channel/v1';
-export const CHANNEL_ENVELOPE_SCHEMA = 'llm-notary/release-channel-envelope/v1';
+export const RELEASE_SCHEMA = 'notary/release/v1';
+export const CHANNEL_SCHEMA = 'notary/release-channel/v1';
+export const CHANNEL_ENVELOPE_SCHEMA = 'notary/release-channel-envelope/v1';
 
 const safeIdentifier = (value) => typeof value === 'string'
   && value.length > 0
@@ -67,7 +67,7 @@ export async function createReleaseManifest({
   if (origin.protocol !== 'https:' || origin.pathname !== '/' || origin.search || origin.hash) {
     throw new Error('publicOrigin must be an HTTPS origin');
   }
-  const buildUrl = `${origin.origin}/downloads/cli/builds/${buildId}`;
+  const buildUrl = `${origin.origin}/downloads/releases/builds/${buildId}`;
   const updaterName = 'LLM-Notary-macos-arm64.app.tar.gz';
   const updaterSignature = requireTauriSignature(
     (await readFile(path.join(releaseDir, `${updaterName}.sig`), 'utf8')).trim(),
