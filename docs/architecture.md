@@ -161,7 +161,7 @@ Use these distinctions when describing a trace:
   and publisher labels are local or platform observations. They are not
   upgraded into cryptographic claims by appearing beside a verified trace.
 - A shared conversation is rendered from an admitted canonical trace. The
-  retained exact `.llmtrace` download carries the proof needed for independent
+  retained exact `.llmtrace` export carries the proof needed for independent
   verification; the rendered page alone does not.
 
 ## What the system does not prove
@@ -185,7 +185,7 @@ the current prototype.
 
 Local capture, finalization, and verification never imply sharing.
 Sharing requires a separately authorized and explicit action plus an Unlisted
-or Listed choice. Owners can later unpublish, set an expiry, or require a
+or Listed choice. Owners can later stop sharing, set an expiry, or require a
 password on the stable link. These are hosted access controls, not a change to
 the package disclosure: admission still receives and inspects the complete
 shared `.llmtrace`.

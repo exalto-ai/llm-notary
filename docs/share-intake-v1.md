@@ -48,9 +48,9 @@ Content-Type: application/json
 }
 ```
 
-`visibility` is required. `unlisted` creates a stable link without Library
+`visibility` is required. `unlisted` creates a stable link without public
 discovery and adds no-index response headers. `listed` also includes the Trace
-in the Library. A password of 8 through 128 bytes and an expiry of at most 365
+in public Traces. A password of 8 through 128 bytes and an expiry of at most 365
 days may be applied atomically so a protected Trace is never briefly exposed.
 
 Set `allow_high_entropy` only after reviewing the complete disclosure and

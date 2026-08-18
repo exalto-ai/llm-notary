@@ -77,8 +77,8 @@ internal reference, and external user journey agree.
   intake, size/digest completion, safety checks, cryptographic verification,
   exact-package retention, cleanup, Unlisted/Listed semantics, and force limits.
 - [x] Public trace access: hosted platform, architecture, admission spec,
-  Library/share UI, and contract distinguish rendered inspection from evidence
-  download and cover passwords, expiry, unpublish, discovery, reports, and
+  public Traces/share UI, and contract distinguish rendered inspection from evidence
+  export and cover passwords, expiry, stop sharing, discovery, reports, and
   cache policy.
 - [x] Hosted deployment: Fly, database, development, and architecture guides
   cover the stable gateway, API/site/notary ownership, migration ordering,

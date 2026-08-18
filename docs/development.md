@@ -15,7 +15,7 @@ documentation update rules that protect LLM Notary's trust boundaries.
 | `runtime/crates/notary-server/` | public ticketless remote notary runtime and generic admission/lifecycle seam |
 | `runtime/apps/admin-dashboard/` | independently locked dashboard source, generated local API, tests, and assets |
 | `platform/crates/notary-server-platform-adapter/` | private platform ticket redemption, durable usage outbox, and settlement policy |
-| `platform/crates/notary-api/` | hosted API, identity, admission tickets, sharing, verification, Library, and billing |
+| `platform/crates/notary-api/` | hosted API, identity, admission tickets, sharing, verification, public Traces, and billing |
 | `platform/migrations/` | forward-only hosted schema migrations |
 | `platform/web/` | private platform website |
 | `compose.yml`, `deploy/`, `.github/workflows/` | containers, production deployment, and CI |
