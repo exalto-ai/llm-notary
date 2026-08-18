@@ -3,7 +3,8 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 import notify
 import run
@@ -95,6 +96,95 @@ class GateAndClassificationTests(unittest.TestCase):
             arguments = run.parse_arguments()
         self.assertEqual(arguments.notaryd, "/tmp/notaryd")
         self.assertFalse(hasattr(arguments, "llm_notaryd"))
+
+    def test_notarization_polls_the_canonical_operation_command(self) -> None:
+        canary = run.Canary.__new__(run.Canary)
+        canary.cli = ["llm-notary", "--json"]
+        canary.environment = {}
+        canary.arguments = SimpleNamespace(notarization_timeout=60)
+
+        with (
+            patch.object(
+                run,
+                "run_json",
+                side_effect=[
+                    {"operation": {"operation_id": "op-1", "state": "queued"}},
+                    RuntimeError("stop after operation poll"),
+                ],
+            ) as run_json,
+            patch.object(run.time, "sleep"),
+            self.assertRaisesRegex(RuntimeError, "stop after operation poll"),
+        ):
+            canary.notarize_verify_share(
+                [{"trace_id": "trc-1"}],
+                {"notarizations": [], "shares": []},
+            )
+
+        self.assertEqual(
+            run_json.call_args_list[1].args[0],
+            ["llm-notary", "--json", "operation", "op-1"],
+        )
+
+    def test_notarization_uses_canonical_verification_contract(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            canary = run.Canary.__new__(run.Canary)
+            canary.cli = [
+                "llm-notary",
+                "--json",
+                "--config",
+                "/private/config.toml",
+            ]
+            canary.environment = {}
+            canary.arguments = SimpleNamespace(
+                notarization_timeout=60,
+                share_timeout=60,
+            )
+            canary.admin_origin = "http://127.0.0.1:8788"
+            canary.root = Path(directory)
+            result = {"notarizations": [], "shares": []}
+            download = MagicMock()
+            download.read.return_value = b"trace-package"
+            download.__enter__.return_value = download
+
+            with (
+                patch.object(
+                    run,
+                    "run_json",
+                    side_effect=[
+                        {
+                            "operation": {
+                                "operation_id": "op-1",
+                                "state": "succeeded",
+                            }
+                        },
+                        {"outcome": "passed", "trace_id": "trc-1"},
+                        {},
+                        {
+                            "trace_id": "trc-1",
+                            "progress": "shared",
+                            "package_url": "https://example.test/package.llmtrace",
+                            "share_url": "https://example.test/s/trc-1",
+                        },
+                        {"outcome": "passed", "trace_id": "trc-1"},
+                    ],
+                ) as run_json,
+                patch.object(run.urllib.request, "urlopen", return_value=download),
+            ):
+                canary.notarize_verify_share([{"trace_id": "trc-1"}], result)
+
+        self.assertEqual(len(result["notarizations"]), 1)
+        self.assertEqual(len(result["shares"]), 1)
+        self.assertEqual(
+            run_json.call_args_list[-1].args[0][:-1],
+            [
+                "llm-notary",
+                "--json",
+                "--config",
+                "/private/config.toml",
+                "traces",
+                "verify",
+            ],
+        )
 
     def test_canary_publications_are_listed(self) -> None:
         self.assertEqual(run.SHARE_VISIBILITY, "listed")

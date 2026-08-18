@@ -748,7 +748,7 @@ class Canary:
                     raise CanaryFailure("notarization", "notarization_timeout")
                 time.sleep(2)
                 operation = run_json(
-                    [*self.cli, "operations", "show", operation_id],
+                    [*self.cli, "operation", operation_id],
                     env=self.environment,
                     stage="notarization",
                     code="notarization_failed",
@@ -777,7 +777,7 @@ class Canary:
                 stage="private_verification",
                 code="private_verify_failed",
             )
-            if verified.get("verified") is not True:
+            if verified.get("outcome") != "passed":
                 raise CanaryFailure("private_verification", "private_verify_failed")
             trace = run_json(
                 [*self.cli, "traces", "show", trace_id],
@@ -853,13 +853,13 @@ class Canary:
                 raise CanaryFailure("public_verification", "public_verify_failed")
             private_write_bytes(package_path, package)
             public_verified = run_json(
-                [self.arguments.llm_notary, "--json", "traces", "verify", str(package_path)],
+                [*self.cli, "traces", "verify", str(package_path)],
                 env=self.environment,
                 timeout=120,
                 stage="public_verification",
                 code="public_verify_failed",
             )
-            if public_verified.get("verified") is not True:
+            if public_verified.get("outcome") != "passed":
                 raise CanaryFailure("public_verification", "public_verify_failed")
             result["shares"].append(
                 {
