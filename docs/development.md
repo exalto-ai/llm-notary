@@ -13,7 +13,7 @@ documentation update rules that protect LLM Notary's trust boundaries.
 | `runtime/crates/llm-notary-updater/` | signed-update verification shared by CLI and desktop |
 | `runtime/crates/notary-core/` | Proxy-TLS protocol, evidence contracts, normalization, trust directory, and verification |
 | `runtime/crates/notary-server/` | public ticketless remote notary runtime and generic admission/lifecycle seam |
-| `runtime/apps/local-dashboard/` | independently locked dashboard source, generated local API, tests, and assets |
+| `runtime/apps/admin-dashboard/` | independently locked dashboard source, generated local API, tests, and assets |
 | `platform/crates/notary-server-platform-adapter/` | private platform ticket redemption, durable usage outbox, and settlement policy |
 | `platform/crates/notary-api/` | hosted API, identity, admission tickets, sharing, verification, Library, and billing |
 | `platform/migrations/` | forward-only hosted schema migrations |
@@ -36,7 +36,7 @@ generated API clients, or their documentation:
 
 ```bash
 npm --prefix js/app ci
-npm --prefix runtime/apps/local-dashboard ci
+npm --prefix runtime/apps/admin-dashboard ci
 ```
 
 ## Generated API contracts
@@ -45,14 +45,14 @@ Both Rust routers generate OpenAPI 3.1. The TypeScript clients are generated
 from committed contract copies.
 
 ```bash
-npm --prefix runtime/apps/local-dashboard run generate:api
+npm --prefix runtime/apps/admin-dashboard run generate:api
 npm --prefix js/app run generate:platform-api
 ```
 
 Use the check forms in CI or before review:
 
 ```bash
-npm --prefix runtime/apps/local-dashboard run check:api
+npm --prefix runtime/apps/admin-dashboard run check:api
 npm --prefix js/app run check:platform-api
 ```
 
@@ -82,11 +82,11 @@ cargo test \
   --all-targets --all-features
 cargo test --manifest-path runtime/Cargo.toml \
   --workspace --all-targets --all-features
-npm --prefix runtime/apps/local-dashboard run build
+npm --prefix runtime/apps/admin-dashboard run build
 npm --prefix js/app run build
-npm --prefix runtime/apps/local-dashboard run test
+npm --prefix runtime/apps/admin-dashboard run test
 npm --prefix js/app run test:site
-npm --prefix runtime/apps/local-dashboard run check:local-docs
+npm --prefix runtime/apps/admin-dashboard run check:local-docs
 ```
 
 Ordinary tests must remain deterministic and offline. They do not need a
@@ -235,13 +235,13 @@ fixed, clearly synthetic test credential; never substitute a real key.
 
 The hosted SPA is split by domain under `js/app/src/site/`, with
 `js/app/src/main.tsx` as the application shell and router. The public runtime
-dashboard lives independently under `runtime/apps/local-dashboard/`.
+dashboard lives independently under `runtime/apps/admin-dashboard/`.
 
 `runtime/crates/notaryd/dashboard/` is intentionally committed build
 output. `notaryd` embeds that directory with `RustEmbed`, while source
 installs, release builds, and desktop sidecar builds can invoke Cargo without
 Node. After changing the local dashboard, run
-`npm --prefix runtime/apps/local-dashboard run build` to regenerate the embedded
+`npm --prefix runtime/apps/admin-dashboard run build` to regenerate the embedded
 files; do not edit them by hand.
 
 ## Documentation sources
@@ -275,7 +275,7 @@ When behavior changes, update every affected surface. In particular:
 Run both documentation contract checks after prose changes:
 
 ```bash
-npm --prefix runtime/apps/local-dashboard run check:local-docs
+npm --prefix runtime/apps/admin-dashboard run check:local-docs
 npm --prefix js/app run check:docs
 ```
 
@@ -289,9 +289,9 @@ Committed dashboard images use synthetic fixtures and a fixed clock. Regenerate
 them only after a dashboard change:
 
 ```bash
-npx --prefix runtime/apps/local-dashboard playwright install chromium
-npm --prefix runtime/apps/local-dashboard run capture:dashboard-docs
-npm --prefix runtime/apps/local-dashboard run check:local-docs
+npx --prefix runtime/apps/admin-dashboard playwright install chromium
+npm --prefix runtime/apps/admin-dashboard run capture:dashboard-docs
+npm --prefix runtime/apps/admin-dashboard run check:local-docs
 ```
 
 Review every generated image for sensitive data and layout regressions before

@@ -8,7 +8,7 @@ The CLI and services link third-party Rust crates. Their exact, reproducible
 set is recorded in the committed `Cargo.lock`; each crate's declared SPDX
 license is available from its `Cargo.toml` in the crates.io source archive.
 The web application dependencies are equivalently pinned in
-`apps/local-dashboard/package-lock.json`.
+`apps/admin-dashboard/package-lock.json`.
 
 This repository also vendors a locally patched copy of TLSNotary in
 `vendor/tlsn`. The patch is maintained only for the protocol behavior described

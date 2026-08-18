@@ -596,6 +596,6 @@ and public artifacts must not claim guarantees beyond what their verifier
 checks.
 
 For exact operations and schemas, use the live [OpenAPI document](http://127.0.0.1:8788/openapi.json).
-For the visual workflow, continue with the [local dashboard guide](local-dashboard.md).
+For the visual workflow, continue with the [local dashboard guide](admin-dashboard.md).
 For the on-disk privacy and verification boundary, see [Artifact formats and
 verification](artifact-formats.md).

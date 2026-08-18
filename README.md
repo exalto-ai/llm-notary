@@ -23,9 +23,9 @@ runtime/tooling/check-boundary.sh
 cargo fmt --check
 cargo test -p notary-api -p notary-server-platform-adapter --all-targets --all-features
 cargo test --manifest-path runtime/Cargo.toml --workspace --all-targets --all-features
-npm --prefix runtime/apps/local-dashboard run build
+npm --prefix runtime/apps/admin-dashboard run build
 npm --prefix js/app run build
-npm --prefix runtime/apps/local-dashboard run check:local-docs
+npm --prefix runtime/apps/admin-dashboard run check:local-docs
 ```
 
 See [private documentation](docs/README.md) and [runtime documentation](runtime/docs/README.md).

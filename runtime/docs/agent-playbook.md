@@ -213,4 +213,4 @@ should not print previews unless the user explicitly asks and the local preview
 policy allows it.
 
 See the [local service guide](local-service.md) for state and trust semantics,
-and the [dashboard guide](local-dashboard.md) for the equivalent visual flow.
+and the [dashboard guide](admin-dashboard.md) for the equivalent visual flow.

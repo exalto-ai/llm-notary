@@ -264,7 +264,7 @@ package.
 
 ## Next steps
 
-- [Use the dashboard](local-dashboard.md)
+- [Use the dashboard](admin-dashboard.md)
 - [Configure providers and coding agents](provider-setup.md)
 - [Operate the daemon and REST API](local-service.md)
 - [Understand the architecture and trust model](architecture.md)
