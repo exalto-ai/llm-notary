@@ -2591,9 +2591,27 @@ mod tests {
         let (state, _storage, headers, _) = test_state().await;
         let mut no_password = request();
         no_password.password = Some(String::new());
-        create_hosted_trace(State(state.clone()), headers, Json(no_password))
+        create_hosted_trace(State(state.clone()), headers.clone(), Json(no_password))
             .await
             .expect("create Trace without password protection");
+        let trace_id: String = sqlx::query_scalar("SELECT trace_id FROM traces")
+            .fetch_one(&state.database)
+            .await
+            .expect("created Trace");
+        let Json(updated) = update_trace_access(
+            State(state.clone()),
+            headers,
+            CookieJar::new(),
+            Path(trace_id),
+            Json(UpdateTraceAccessSettings {
+                visibility: None,
+                password: Some(String::new()),
+                expires_in_days: None,
+            }),
+        )
+        .await
+        .expect("clear absent password protection");
+        assert!(!updated.access.password_protected);
         assert_eq!(
             sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM trace_access_change_limits")
                 .fetch_one(&state.database)

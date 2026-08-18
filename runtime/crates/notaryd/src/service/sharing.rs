@@ -200,16 +200,20 @@ pub(crate) enum ShareStatusError {
     Unavailable,
 }
 
+pub(crate) struct SharePackageOptions<'a> {
+    pub(crate) visibility: ShareVisibility,
+    pub(crate) password: Option<&'a str>,
+    pub(crate) expires_in_days: Option<u32>,
+    pub(crate) force: bool,
+    pub(crate) reactivate: bool,
+}
+
 /// Verifies and shares exact already-snapshotted package bytes.
 pub(crate) async fn share_package_bytes(
     archive: &[u8],
     trusted_key: Option<&str>,
     shared_trust: Option<&RegistrySnapshot>,
-    visibility: ShareVisibility,
-    password: Option<&str>,
-    expires_in_days: Option<u32>,
-    force: bool,
-    reactivate: bool,
+    options: SharePackageOptions<'_>,
 ) -> Result<(ShareOutput, String, String)> {
     let embedded_key = trace_package_notary_key_bytes(archive)
         .context("validating notarized .llmtrace; nothing was uploaded")?;
@@ -234,7 +238,7 @@ pub(crate) async fn share_package_bytes(
             provider_host: verified.manifest.provider_host(),
             request_path: &verified.request_path,
         },
-        force,
+        options.force,
     )
     .context("local public disclosure safety check failed; nothing was uploaded")?;
     let archive_sha256 = sha256_hex(archive);
@@ -264,11 +268,11 @@ pub(crate) async fn share_package_bytes(
         package_format: TRACE_PACKAGE_FORMAT,
         package_size_bytes: archive.len() as u64,
         package_sha256: &archive_sha256,
-        visibility: visibility.as_str(),
-        password,
-        expires_in_days,
-        allow_high_entropy: force,
-        reactivate,
+        visibility: options.visibility.as_str(),
+        password: options.password,
+        expires_in_days: options.expires_in_days,
+        allow_high_entropy: options.force,
+        reactivate: options.reactivate,
     };
     let share = submit_archive(&authenticated, archive, &idempotency_key, &request).await?;
     let status_url = absolute_status_url(&authenticated.origin, &share.status_url)?;

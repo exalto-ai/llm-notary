@@ -1628,7 +1628,7 @@ fn existing_share_action(
     }
 }
 
-#[utoipa::path(get, path = "/v1/traces/{trace_id}/share", summary = "Get a Trace share", description = "Returns the current canonical share's safe access and progress state. Hosted intake and presigned upload URLs are never exposed.", params(("trace_id" = String, Path)), responses((status = 200, body = TraceShare), (status = 401, body = ErrorEnvelope), (status = 404, body = ErrorEnvelope), (status = 409, body = ErrorEnvelope), (status = 503, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
+#[utoipa::path(get, path = "/v1/traces/{trace_id}/share", summary = "Get a Trace share", description = "Returns the current canonical share's safe access and progress state. Hosted intake and presigned upload URLs are never exposed.", params(("trace_id" = String, Path)), responses((status = 200, body = TraceShare), (status = 400, body = ErrorEnvelope), (status = 401, body = ErrorEnvelope), (status = 402, body = ErrorEnvelope), (status = 404, body = ErrorEnvelope), (status = 409, body = ErrorEnvelope), (status = 429, body = ErrorEnvelope), (status = 503, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
 async fn get_trace_share(
     State(state): State<AdminState>,
     Path(trace_id): Path<String>,
@@ -1750,11 +1750,13 @@ async fn submit_trace_share(
         &bytes,
         state.config.notary.public_key.as_deref(),
         shared_trust.as_ref(),
-        body.visibility.into(),
-        body.password.as_ref().map(SecretInput::expose),
-        body.expires_in_days,
-        body.force,
-        body.reactivate,
+        sharing::SharePackageOptions {
+            visibility: body.visibility.into(),
+            password: body.password.as_ref().map(SecretInput::expose),
+            expires_in_days: body.expires_in_days,
+            force: body.force,
+            reactivate: body.reactivate,
+        },
     )
     .await
     .map_err(share_package_api_error)?;
@@ -1779,7 +1781,7 @@ async fn submit_trace_share(
     )
 }
 
-#[utoipa::path(delete, path = "/v1/traces/{trace_id}/share", summary = "Stop sharing a Trace", description = "Stops public access while retaining the canonical hosted identity for an explicit later resume.", params(("trace_id" = String, Path)), responses((status = 200, body = TraceShare), (status = 401, body = ErrorEnvelope), (status = 404, body = ErrorEnvelope), (status = 409, body = ErrorEnvelope), (status = 503, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
+#[utoipa::path(delete, path = "/v1/traces/{trace_id}/share", summary = "Stop sharing a Trace", description = "Stops public access while retaining the canonical hosted identity for an explicit later resume.", params(("trace_id" = String, Path)), responses((status = 200, body = TraceShare), (status = 400, body = ErrorEnvelope), (status = 401, body = ErrorEnvelope), (status = 402, body = ErrorEnvelope), (status = 404, body = ErrorEnvelope), (status = 409, body = ErrorEnvelope), (status = 429, body = ErrorEnvelope), (status = 503, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
 async fn delete_trace_share(
     State(state): State<AdminState>,
     Path(trace_id): Path<String>,
@@ -3505,6 +3507,15 @@ mod tests {
         let expiry = hosted_share_api_error(sharing::HostedShareError::ReactivationExpiryRequired);
         assert_eq!(expiry.status, StatusCode::BAD_REQUEST);
         assert_eq!(expiry.code, "trace_reactivation_expiry_required");
+        let billing = hosted_share_api_error(sharing::HostedShareError::BillingReview);
+        assert_eq!(billing.status, StatusCode::PAYMENT_REQUIRED);
+        assert_eq!(billing.code, "billing_review");
+        let capacity = hosted_share_api_error(sharing::HostedShareError::PasswordCapacity);
+        assert_eq!(capacity.status, StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(capacity.code, "trace_password_capacity");
+        let reactivation = hosted_share_api_error(sharing::HostedShareError::ReactivationRequired);
+        assert_eq!(reactivation.status, StatusCode::CONFLICT);
+        assert_eq!(reactivation.code, "trace_reactivation_required");
     }
 
     #[tokio::test]
