@@ -4,7 +4,7 @@ members = [
     "crates/notary-core",
     "crates/notaryd",
     "crates/notary-server",
-    "crates/llm-notary-updater",
+    "crates/notary-updater",
 ]
 exclude = ["vendor/tlsn", "vendor/tlsn-utils"]
 resolver = "2"

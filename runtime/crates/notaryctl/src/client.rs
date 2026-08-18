@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use url::Url;
 
-use llm_notary_updater as update;
+use notary_updater as update;
 
 use super::{
     API_VERSION, CliError, EXIT_AUTHENTICATION, EXIT_CONFLICT, EXIT_ERROR, EXIT_INVALID_INPUT,

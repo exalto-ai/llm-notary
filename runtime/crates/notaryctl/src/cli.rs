@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use llm_notary_updater::BUILD_ID;
+use notary_updater::BUILD_ID;
 
 #[derive(Parser, Debug)]
 #[command(

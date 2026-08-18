@@ -1,9 +1,9 @@
 [package]
-name = "llm-notary-updater"
+name = "notary-updater"
 version = "0.1.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
-description = "Authenticated LLM Notary release checks and rollback-safe updates"
+description = "Authenticated Notary release checks and rollback-safe updates"
 build = "build.rs"
 
 [dependencies]

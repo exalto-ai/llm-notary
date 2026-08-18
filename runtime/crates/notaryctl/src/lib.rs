@@ -5,7 +5,7 @@ use std::{fmt, io};
 use clap::{Parser, error::ErrorKind};
 use serde_json::{Value, json};
 
-use llm_notary_updater::{self as update, BUILD_ID};
+use notary_updater::{self as update, BUILD_ID};
 
 const API_VERSION: &str = "v1";
 const EXIT_ERROR: i32 = 1;
