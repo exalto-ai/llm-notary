@@ -639,7 +639,7 @@ export interface components {
             status: string;
         };
         /** @enum {string} */
-        ShareProgress: "verifying" | "shared" | "rejected" | "failed";
+        ShareProgress: "verifying" | "shared" | "stopped" | "rejected" | "failed";
         /** @enum {string} */
         ShareVisibility: "unlisted" | "listed";
         StatusResponse: {
@@ -1752,6 +1752,14 @@ export interface operations {
                 };
             };
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };

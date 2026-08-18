@@ -87,6 +87,8 @@ function shareProgressLabel(progress: string) {
       return 'Verifying';
     case 'shared':
       return 'Shared';
+    case 'stopped':
+      return 'Stopped';
     case 'rejected':
       return 'Rejected';
     default:
@@ -1003,6 +1005,7 @@ function NotarizedTraceInspector({
   const [shareExpiry, setShareExpiry] = useState('none');
   const [sharePasswordMode, setSharePasswordMode] = useState('none');
   const [sharePassword, setSharePassword] = useState('');
+  const [shareHighEntropyReview, setShareHighEntropyReview] = useState(false);
   const [stopConfirmation, setStopConfirmation] = useState(false);
   const [shareRequested, setShareRequested] = useState(false);
   const currentCapture = useRef(captureId);
@@ -1015,6 +1018,7 @@ function NotarizedTraceInspector({
     setShareExpiry('none');
     setSharePasswordMode('none');
     setSharePassword('');
+    setShareHighEntropyReview(false);
     setStopConfirmation(false);
     setShareRequested(false);
   }, [captureId]);
@@ -1061,7 +1065,9 @@ function NotarizedTraceInspector({
     retry: false,
     refetchInterval: (query) => {
       const progress = query.state.data?.progress;
-      return !progress || ['shared', 'rejected', 'failed'].includes(progress) ? false : 3_000;
+      return !progress || ['shared', 'stopped', 'rejected', 'failed'].includes(progress)
+        ? false
+        : 3_000;
     },
   });
   const saveShare = useMutation({
@@ -1070,6 +1076,7 @@ function NotarizedTraceInspector({
     onSuccess: (share, request) => {
       setShareDialogMode(null);
       setSharePassword('');
+      setShareHighEntropyReview(false);
       setShareRequested(true);
       queryClient.setQueryData(['share', captureId], share);
       queryClient.invalidateQueries({ queryKey: ['capture', captureId] });
@@ -1084,6 +1091,10 @@ function NotarizedTraceInspector({
     onError: (error) => {
       if (error instanceof LocalApiError && error.code === 'account_authentication_required') {
         void queryClient.invalidateQueries({ queryKey: ['account'] });
+      }
+      if (error instanceof LocalApiError && error.code === 'share_high_entropy_review_required') {
+        setShareHighEntropyReview(true);
+        return;
       }
       mutationError('Could not share this Trace', error);
     },
@@ -1125,6 +1136,7 @@ function NotarizedTraceInspector({
     setShareExpiry(mode === 'create' ? 'none' : 'keep');
     setSharePasswordMode(mode === 'create' ? 'none' : 'keep');
     setSharePassword('');
+    setShareHighEntropyReview(false);
   };
   const passwordWillBeSet =
     shareDialogMode === 'create' ? sharePassword.length > 0 : sharePasswordMode === 'replace';
@@ -1146,6 +1158,7 @@ function NotarizedTraceInspector({
     }
     if (shareDialogMode === 'resume') settings.reactivate = true;
     if (shareDialogMode === 'retry' && activeShare?.progress === 'rejected') settings.force = true;
+    if (shareHighEntropyReview) settings.force = true;
     saveShare.mutate({ settings, mode: shareDialogMode });
   };
   return (
@@ -1210,20 +1223,22 @@ function NotarizedTraceInspector({
           <div>
             <Text className="eyebrow">{shareProgressLabel(activeShare.progress)}</Text>
             <Text>
-              {!activeShare.access_enabled
+              {activeShare.progress === 'stopped'
                 ? 'Public access is disabled for this share.'
-                : activeShare.progress === 'shared'
-                  ? activeShare.visibility === 'listed'
-                    ? 'This disclosed Trace is publicly listed and readable.'
-                    : 'Anyone with this URL can read the disclosed Trace.'
-                  : `${activeShare.visibility === 'listed' ? 'Listed' : 'Unlisted'} access · ${activeShare.password_protected ? 'password required' : 'no password'}${activeShare.expires_at_unix_ms ? ` · expires ${formatDate(activeShare.expires_at_unix_ms)}` : ''}`}
+                : activeShare.progress === 'shared' && !activeShare.access_enabled
+                  ? 'Public access for this share has expired.'
+                  : activeShare.progress === 'shared'
+                    ? activeShare.visibility === 'listed'
+                      ? 'This disclosed Trace is publicly listed and readable.'
+                      : 'Anyone with this URL can read the disclosed Trace.'
+                    : `${activeShare.visibility === 'listed' ? 'Listed' : 'Unlisted'} access · ${activeShare.password_protected ? 'password required' : 'no password'}${activeShare.expires_at_unix_ms ? ` · expires ${formatDate(activeShare.expires_at_unix_ms)}` : ''}`}
             </Text>
             {activeShare.failure_code && (
               <Text>
                 Safe failure code · <code>{activeShare.failure_code}</code>
               </Text>
             )}
-            {!['rejected', 'failed'].includes(activeShare.progress) && (
+            {!['stopped', 'rejected', 'failed'].includes(activeShare.progress) && (
               <ShareProgressTimeline progress={activeShare.progress} />
             )}
             {shareStatus.error && (
@@ -1253,12 +1268,12 @@ function NotarizedTraceInspector({
                 </Button>
               </>
             )}
-            {activeShare.progress === 'shared' && (
+            {['shared', 'stopped'].includes(activeShare.progress) && (
               <Button variant="outline" onClick={() => openShareDialog('manage')}>
                 Manage access
               </Button>
             )}
-            {activeShare.progress === 'shared' && !activeShare.access_enabled && (
+            {activeShare.progress === 'stopped' && (
               <Button variant="outline" onClick={() => openShareDialog('resume')}>
                 Resume sharing
               </Button>
@@ -1545,6 +1560,13 @@ function NotarizedTraceInspector({
                 {saveShare.isPending && (
                   <Text role="status">Preparing and uploading the exact package…</Text>
                 )}
+                {shareHighEntropyReview && (
+                  <Text role="alert">
+                    An unexplained high-entropy value was found in the disclosed package. Review the
+                    complete disclosure above. Continuing overrides only this heuristic; known
+                    credential patterns and unsafe fields remain blocked.
+                  </Text>
+                )}
               </aside>
             </div>
           )}
@@ -1564,7 +1586,9 @@ function NotarizedTraceInspector({
                     ? 'Save access'
                     : shareDialogMode === 'resume'
                       ? 'Resume sharing'
-                      : 'Share trace'}
+                      : shareHighEntropyReview
+                        ? 'Share after review'
+                        : 'Share trace'}
               </Button>
             )}
           </AlertDialogFooter>

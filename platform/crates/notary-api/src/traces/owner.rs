@@ -172,6 +172,7 @@ struct HostedTrace {
     status_url: String,
     public_url: Option<String>,
     package_url: Option<String>,
+    owner_package_url: Option<String>,
 }
 
 #[derive(FromRow)]
@@ -347,6 +348,7 @@ pub(crate) async fn run_cleanup_worker(state: NotaryApiState, mut shutdown: watc
         (status = 402, body = crate::ErrorResponse),
         (status = 403, body = crate::ErrorResponse),
         (status = 409, body = crate::ErrorResponse),
+        (status = 429, body = crate::ErrorResponse),
         (status = 500, body = crate::ErrorResponse),
         (status = 503, body = crate::ErrorResponse)
     ),
@@ -378,6 +380,9 @@ async fn create_hosted_trace(
     let expires_at_changed = request.expires_in_days.is_some();
     let access_expires_at = expires_at_from_days(request.expires_in_days, now)?;
     let password_changed = request.password.is_some();
+    if password_changed {
+        enforce_password_change_limit(&state, &account_id, now).await?;
+    }
     let access_password_hash = match request.password.as_deref() {
         Some("") | None => None,
         Some(_) => Some(hash_trace_access_password(request.password.clone().unwrap()).await?),
@@ -587,7 +592,7 @@ async fn create_hosted_trace(
                  staging_purged_at = NULL, updated_at = $10, failure_code = NULL
              WHERE trace_id = $11 AND account_id = $12
                AND ((status = 'failed' AND failure_code = 'upload_expired')
-                    OR (status = 'rejected' AND failure_code LIKE 'high_entropy_value_%'
+                    OR (status = 'rejected' AND failure_code LIKE 'high\\_entropy\\_value\\_%' ESCAPE '\\'
                         AND allow_high_entropy = FALSE AND $9 = TRUE))
                AND upload_generation = $13",
         )
@@ -1449,6 +1454,10 @@ fn hosted_trace_response(job: &HostedTraceRow, public_origin: &url::Url) -> Host
         }),
         package_url: (live && job.package_object_key.is_some())
             .then(|| format!("/api/public/traces/{}/package.llmtrace", job.trace_id)),
+        owner_package_url: job
+            .package_object_key
+            .is_some()
+            .then(|| format!("/api/traces/{}/package.llmtrace", job.trace_id)),
     }
 }
 

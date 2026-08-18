@@ -19,7 +19,7 @@ const fixtureNow = Date.UTC(2026, 6, 28, 16, 42, 0);
 
 type FixtureShareState = {
   captureId: string;
-  progress: 'verifying' | 'shared' | 'rejected' | 'failed';
+  progress: 'verifying' | 'shared' | 'stopped' | 'rejected' | 'failed';
   visibility: ShareVisibility;
   accessEnabled: boolean;
   passwordProtected: boolean;
@@ -903,9 +903,12 @@ export function createFixtureApi({
     expires_at_unix_ms: share.expiresAt,
     updated_at_unix_ms: share.updatedAt,
     failure_code: share.failureCode,
-    share_url: share.progress === 'shared' ? `https://notary.example/traces/${shareId}` : null,
+    share_url:
+      share.progress === 'shared' && share.accessEnabled
+        ? `https://notary.example/traces/${shareId}`
+        : null,
     package_url:
-      share.progress === 'shared'
+      share.progress === 'shared' && share.accessEnabled
         ? `https://notary.example/api/public/traces/${shareId}/package.llmtrace`
         : null,
   });
@@ -1204,12 +1207,21 @@ export function createFixtureApi({
       const updatedAt = actionTimestamp();
       const share: FixtureShareState = {
         captureId,
-        progress: previous?.progress === 'shared' ? 'shared' : 'verifying',
+        progress:
+          previous?.progress === 'stopped'
+            ? settings.reactivate
+              ? 'shared'
+              : 'stopped'
+            : previous?.progress === 'shared'
+              ? 'shared'
+              : 'verifying',
         visibility: settings.visibility,
         accessEnabled:
-          previous?.progress === 'shared' && previous.accessEnabled === false
+          previous?.progress === 'stopped'
             ? Boolean(settings.reactivate)
-            : true,
+            : previous?.progress === 'shared' && previous.accessEnabled === false
+              ? settings.expires_in_days != null
+              : true,
         passwordProtected:
           settings.password == null
             ? (previous?.passwordProtected ?? false)
@@ -1240,7 +1252,7 @@ export function createFixtureApi({
       if (!entry) throw new LocalApiError(404, 'share_not_found', 'Share not found');
       const [shareId, share] = entry;
       share.accessEnabled = false;
-      share.progress = 'shared';
+      share.progress = 'stopped';
       share.updatedAt = actionTimestamp();
       return fixtureShare(shareId, share);
     },

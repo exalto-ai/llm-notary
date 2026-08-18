@@ -899,10 +899,49 @@ describe('Notary admin dashboard', () => {
     expect(retrySettings).toEqual({ visibility: 'unlisted', force: true });
   });
 
+  test('offers an explicit local review for unexplained high-entropy disclosure', async () => {
+    const traceId = 'trc-20260727-research-brief';
+    const fixture = createFixtureApi();
+    const requestedSettings: Parameters<LocalApi['share']>[1][] = [];
+    let firstAttempt = true;
+    const api: LocalApi = {
+      ...fixture,
+      share: async (id, settings) => {
+        requestedSettings.push(settings);
+        if (firstAttempt) {
+          firstAttempt = false;
+          throw new LocalApiError(
+            409,
+            'share_high_entropy_review_required',
+            'Disclosure review is required',
+          );
+        }
+        return fixture.share(id, settings);
+      },
+    };
+    renderDashboard(`/traces/${traceId}`, api);
+
+    await page.getByRole('button', { name: 'Share', exact: true }).click();
+    await page.getByRole('button', { name: 'Share trace' }).click();
+    await expect
+      .element(page.getByText(/An unexplained high-entropy value was found/))
+      .toBeVisible();
+    await page.getByRole('button', { name: 'Share after review' }).click();
+    expect(requestedSettings).toEqual([
+      { visibility: 'unlisted', expires_in_days: 0, password: '' },
+      { visibility: 'unlisted', expires_in_days: 0, password: '', force: true },
+    ]);
+  });
+
   test('does not present an access-disabled share as publicly readable', async () => {
     const traceId = 'trc-20260727-research-brief';
     const api = createFixtureApi({
-      initialShare: { traceId, visibility: 'unlisted', accessEnabled: false },
+      initialShare: {
+        traceId,
+        visibility: 'unlisted',
+        accessEnabled: false,
+        progress: 'stopped',
+      },
     });
     renderDashboard(`/traces/${traceId}`, api);
 
@@ -916,6 +955,32 @@ describe('Notary admin dashboard', () => {
     await expect
       .element(page.getByRole('button', { name: 'Share', exact: true }))
       .not.toBeInTheDocument();
+  });
+
+  test('keeps an expired share editable without presenting it as stopped', async () => {
+    const traceId = 'trc-20260727-research-brief';
+    const api = createFixtureApi({
+      initialShare: {
+        traceId,
+        visibility: 'unlisted',
+        accessEnabled: false,
+        progress: 'shared',
+        expiresAt: Date.now() - 60_000,
+      },
+    });
+    renderDashboard(`/traces/${traceId}`, api);
+
+    await expect.element(page.getByText('Public access for this share has expired.')).toBeVisible();
+    await expect
+      .element(page.getByRole('button', { name: 'Resume sharing' }))
+      .not.toBeInTheDocument();
+    await page.getByRole('button', { name: 'Manage access' }).click();
+    await page.getByLabelText('Share expiration').click();
+    await page.getByRole('option', { name: '7 days from now' }).click();
+    await page.getByRole('button', { name: 'Save access' }).click();
+    await expect
+      .element(page.getByText('Anyone with this URL can read the disclosed Trace.'))
+      .toBeVisible();
   });
 
   test('keeps the last persisted share visible when status refresh fails', async () => {

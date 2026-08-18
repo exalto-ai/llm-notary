@@ -1381,7 +1381,7 @@ fn migrate(connection: &mut Connection) -> Result<()> {
                 trace_id TEXT PRIMARY KEY REFERENCES traces(trace_id) ON DELETE CASCADE,
                 hosted_trace_id TEXT NOT NULL UNIQUE CHECK (length(hosted_trace_id) BETWEEN 1 AND 256),
                 progress TEXT NOT NULL CHECK (
-                    progress IN ('preparing', 'uploading', 'verifying', 'shared', 'rejected', 'failed')
+                    progress IN ('verifying', 'shared', 'stopped', 'rejected', 'failed')
                 ),
                 visibility TEXT NOT NULL CHECK (visibility IN ('listed', 'unlisted')),
                 access_enabled INTEGER NOT NULL CHECK (access_enabled IN (0, 1)),

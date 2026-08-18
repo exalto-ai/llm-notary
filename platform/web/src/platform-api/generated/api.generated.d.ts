@@ -1086,6 +1086,7 @@ export interface components {
             allow_high_entropy: boolean;
             /** Format: int64 */
             created_at: number;
+            owner_package_url?: string | null;
             package: components["schemas"]["HostedTracePackage"];
             package_url?: string | null;
             public_url?: string | null;
@@ -1217,6 +1218,7 @@ export interface components {
                 allow_high_entropy: boolean;
                 /** Format: int64 */
                 created_at: number;
+                owner_package_url?: string | null;
                 package: components["schemas"]["HostedTracePackage"];
                 package_url?: string | null;
                 public_url?: string | null;
@@ -3495,6 +3497,14 @@ export interface operations {
                 };
             };
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            429: {
                 headers: {
                     [name: string]: unknown;
                 };

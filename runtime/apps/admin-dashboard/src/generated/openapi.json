@@ -1484,6 +1484,16 @@
               }
             }
           },
+          "422": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
           "500": {
             "description": "",
             "content": {
@@ -2515,6 +2525,7 @@
         "enum": [
           "verifying",
           "shared",
+          "stopped",
           "rejected",
           "failed"
         ]

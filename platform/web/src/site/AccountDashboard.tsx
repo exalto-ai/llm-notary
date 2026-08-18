@@ -1906,11 +1906,8 @@ export function Dashboard({
                                 {copiedTraceId === share.trace_id ? 'Copied' : 'Copy link'}
                               </button>
                             )}
-                            {share.package_url && (
-                              <a
-                                href={`/api/traces/${encodeURIComponent(share.trace_id)}/package.llmtrace`}
-                                download
-                              >
+                            {share.owner_package_url && (
+                              <a href={share.owner_package_url} download>
                                 Export .llmtrace
                               </a>
                             )}

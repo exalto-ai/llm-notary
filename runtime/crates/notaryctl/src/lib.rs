@@ -672,6 +672,23 @@ mod tests {
             ])
             .is_ok()
         );
+        let cli = Cli::try_parse_from([
+            "notaryctl",
+            "traces",
+            "share",
+            "trc-example",
+            "--reactivate",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            CliCommand::Traces {
+                command: TracesCommand::Share(ShareArgs {
+                    reactivate: true,
+                    ..
+                })
+            }
+        ));
     }
 
     #[cfg(unix)]

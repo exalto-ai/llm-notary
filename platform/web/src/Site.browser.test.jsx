@@ -1780,6 +1780,7 @@ describe('hosted site', () => {
       status_url: '/api/traces/share-managed',
       public_url: 'https://example.test/s/share-managed',
       package_url: '/package.llmtrace',
+      owner_package_url: '/api/traces/share-managed/package.llmtrace',
     };
     const updates = [];
     let stopped = false;
@@ -1857,6 +1858,9 @@ describe('hosted site', () => {
     await page.getByRole('alertdialog').getByRole('button', { name: 'Stop sharing' }).click();
     expect(stopped).toBe(true);
     await expect.element(page.getByText('Stopped', { exact: true })).toBeVisible();
+    await expect
+      .element(page.getByRole('link', { name: 'Export .llmtrace' }))
+      .toHaveAttribute('href', '/api/traces/share-managed/package.llmtrace');
   });
 
   test('renders every canonical hosted Trace status', async () => {

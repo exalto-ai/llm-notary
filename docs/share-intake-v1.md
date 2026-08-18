@@ -91,7 +91,8 @@ short-lived private upload capability:
     "updated_at": 1785294000,
     "status_url": "/api/traces/trc-hosted-example",
     "public_url": null,
-    "package_url": null
+    "package_url": null,
+    "owner_package_url": null
   },
   "upload": {
     "method": "PUT",
@@ -133,8 +134,10 @@ verifying -> shared
 shared   -> stopped
 ```
 
-Only `shared` Traces receive `public_url` and `package_url`. Failure codes are
-bounded machine values and never include matched secret text.
+Only active, unexpired `shared` Traces receive `public_url` and `package_url`.
+After admission, `owner_package_url` remains available to the authenticated
+owner even when public access expires or is stopped. Failure codes are bounded
+machine values and never include matched secret text.
 
 Owners list their Traces with `GET /api/traces` and update access without
 changing the stable ID:

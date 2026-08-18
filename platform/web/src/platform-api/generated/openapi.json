@@ -2914,6 +2914,16 @@
               }
             }
           },
+          "429": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "",
             "content": {
@@ -4638,6 +4648,12 @@
             "type": "integer",
             "format": "int64"
           },
+          "owner_package_url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "package": {
             "$ref": "#/components/schemas/HostedTracePackage"
           },
@@ -5081,6 +5097,12 @@
                 "created_at": {
                   "type": "integer",
                   "format": "int64"
+                },
+                "owner_package_url": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
                 },
                 "package": {
                   "$ref": "#/components/schemas/HostedTracePackage"

@@ -35,8 +35,9 @@ use tower_http::{
 };
 use utoipa::{Modify, OpenApi, ToSchema};
 
-use notary_core::pagination::{
-    CursorScope, Page, PageQuery, PaginationError, decode_cursor, encode_cursor,
+use notary_core::{
+    pagination::{CursorScope, Page, PageQuery, PaginationError, decode_cursor, encode_cursor},
+    public_safety::PublicPackageSafetyError,
 };
 
 use crate::{
@@ -1619,7 +1620,7 @@ fn existing_share_action(
 ) -> ExistingShareAction {
     if share.progress == "failed"
         || (share.progress == "rejected" && request.force)
-        || (!share.access_enabled && request.reactivate)
+        || (share.progress == "stopped" && request.reactivate)
     {
         ExistingShareAction::Resume
     } else {
@@ -1661,7 +1662,7 @@ async fn get_trace_share(
     Ok(Json(TraceShare::from_record(record)))
 }
 
-#[utoipa::path(put, path = "/v1/traces/{trace_id}/share", summary = "Create or update a Trace share", description = "Idempotently creates, resumes, retries, or changes the Trace's one canonical share after local verification and disclosure-safety checks. The encrypted .llmcapture is never uploaded.", params(("trace_id" = String, Path)), request_body = PutTraceShareRequest, responses((status = 200, body = TraceShare), (status = 202, body = TraceShare), (status = 400, body = ErrorEnvelope), (status = 401, body = ErrorEnvelope), (status = 404, body = ErrorEnvelope), (status = 409, body = ErrorEnvelope), (status = 500, body = ErrorEnvelope), (status = 503, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
+#[utoipa::path(put, path = "/v1/traces/{trace_id}/share", summary = "Create or update a Trace share", description = "Idempotently creates, resumes, retries, or changes the Trace's one canonical share after local verification and disclosure-safety checks. The encrypted .llmcapture is never uploaded.", params(("trace_id" = String, Path)), request_body = PutTraceShareRequest, responses((status = 200, body = TraceShare), (status = 202, body = TraceShare), (status = 400, body = ErrorEnvelope), (status = 401, body = ErrorEnvelope), (status = 404, body = ErrorEnvelope), (status = 409, body = ErrorEnvelope), (status = 422, body = ErrorEnvelope), (status = 500, body = ErrorEnvelope), (status = 503, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
 async fn put_trace_share(
     State(state): State<AdminState>,
     Path(trace_id): Path<String>,
@@ -1755,7 +1756,7 @@ async fn submit_trace_share(
         body.force,
     )
     .await
-    .map_err(|_| ApiError::internal("share_failed"))?;
+    .map_err(share_package_api_error)?;
     if verified_trace_id != trace_id
         || expected_hosted_trace_id.is_some_and(|expected| expected != share.hosted_trace_id)
     {
@@ -1839,6 +1840,16 @@ fn share_status_api_error(error: sharing::ShareStatusError) -> ApiError {
         sharing::ShareStatusError::Unavailable => {
             ApiError::service_unavailable("share_status_unavailable")
         }
+    }
+}
+
+fn share_package_api_error(error: anyhow::Error) -> ApiError {
+    match error.downcast_ref::<PublicPackageSafetyError>() {
+        Some(safety) if safety.code == "high_entropy_value" => {
+            ApiError::conflict("share_high_entropy_review_required")
+        }
+        Some(_) => ApiError::unprocessable("public_disclosure_rejected"),
+        None => ApiError::internal("share_failed"),
     }
 }
 
@@ -3023,6 +3034,7 @@ struct AccountConnectionStartedResponse {
 enum ShareProgress {
     Verifying,
     Shared,
+    Stopped,
     Rejected,
     Failed,
 }
@@ -3033,7 +3045,8 @@ impl ShareProgress {
 
         match value {
             HostedTraceStatus::Verifying => Self::Verifying,
-            HostedTraceStatus::Shared | HostedTraceStatus::Stopped => Self::Shared,
+            HostedTraceStatus::Shared => Self::Shared,
+            HostedTraceStatus::Stopped => Self::Stopped,
             HostedTraceStatus::Rejected => Self::Rejected,
             HostedTraceStatus::Failed => Self::Failed,
         }
@@ -3043,6 +3056,7 @@ impl ShareProgress {
         match self {
             Self::Verifying => "verifying",
             Self::Shared => "shared",
+            Self::Stopped => "stopped",
             Self::Rejected => "rejected",
             Self::Failed => "failed",
         }
@@ -3070,6 +3084,7 @@ impl TraceShare {
             progress: match record.progress.as_str() {
                 "verifying" => ShareProgress::Verifying,
                 "shared" => ShareProgress::Shared,
+                "stopped" => ShareProgress::Stopped,
                 "rejected" => ShareProgress::Rejected,
                 _ => ShareProgress::Failed,
             },
@@ -3356,7 +3371,7 @@ mod tests {
         for (hosted, expected) in [
             (HostedTraceStatus::Verifying, "verifying"),
             (HostedTraceStatus::Shared, "shared"),
-            (HostedTraceStatus::Stopped, "shared"),
+            (HostedTraceStatus::Stopped, "stopped"),
             (HostedTraceStatus::Rejected, "rejected"),
             (HostedTraceStatus::Failed, "failed"),
         ] {
@@ -3416,7 +3431,7 @@ mod tests {
             ExistingShareAction::Resume
         );
 
-        share.progress = "shared".into();
+        share.progress = "stopped".into();
         share.access_enabled = false;
         assert_eq!(
             existing_share_action(&share, &request),

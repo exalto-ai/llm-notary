@@ -344,6 +344,7 @@ notaryctl account show --json
 notaryctl traces share trc-example                         # Unlisted by default
 notaryctl traces share trc-example --visibility listed
 notaryctl traces share trc-example --force                 # Only after disclosure review
+notaryctl traces share trc-example --reactivate            # Resume a stopped share
 notaryctl account disconnect
 ```
 
@@ -572,8 +573,9 @@ disclosure. It cannot override known secret patterns, credential fields,
 disclosed header values, signed credential queries, invalid archives, or failed
 cryptographic verification.
 After submission, poll `GET /v1/traces/{trace_id}/share` on the local admin
-listener. Persisted progress is `verifying`, `shared`,
-`rejected`, or `failed`. The safe response includes `access_enabled`, visibility,
+listener. Persisted progress is `verifying`, `shared`, `stopped`, `rejected`,
+or `failed`. An expired share remains `shared` with `access_enabled: false`,
+while `stopped` records an explicit owner action. The safe response includes `access_enabled`, visibility,
 expiry, and access URLs but never an intake or presigned upload URL. The service
 uses the vault-held account credential
 to fetch admission state; agents and the dashboard never receive that

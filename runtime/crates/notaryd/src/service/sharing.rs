@@ -230,7 +230,7 @@ pub(crate) async fn share_package_bytes(
         .as_deref()
         .map(|value| absolute_same_origin_url(&authenticated.origin, value))
         .transpose()?;
-    let access_enabled = share.status != HostedTraceStatus::Stopped;
+    let access_enabled = share_url.is_some();
     let output = ShareOutput {
         hosted_trace_id: share.trace_id,
         state: share.status,
@@ -398,7 +398,7 @@ fn hosted_trace_status(origin: &ApiOrigin, trace: HostedTrace) -> Result<ShareSt
         .as_deref()
         .map(|value| absolute_same_origin_url(origin, value))
         .transpose()?;
-    let access_enabled = trace.status != HostedTraceStatus::Stopped;
+    let access_enabled = share_url.is_some();
     Ok(ShareStatus {
         hosted_trace_id: trace.trace_id,
         state: trace.status,
@@ -690,7 +690,7 @@ mod tests {
     }
 
     #[test]
-    fn hosted_status_is_canonical_and_stopped_disables_access() {
+    fn hosted_status_is_canonical_and_public_urls_define_access() {
         for legacy in ["preparing", "uploading", "queued", "admitted"] {
             assert!(
                 serde_json::from_value::<HostedTrace>(hosted_trace_json(legacy, "unlisted", false))
@@ -708,6 +708,17 @@ mod tests {
         )
         .unwrap();
         assert_eq!(status.state, HostedTraceStatus::Stopped);
+        assert!(!status.access_enabled);
+
+        let expired =
+            serde_json::from_value::<HostedTrace>(hosted_trace_json("shared", "unlisted", false))
+                .unwrap();
+        let status = hosted_trace_status(
+            &ApiOrigin::parse("https://notary.example").unwrap(),
+            expired,
+        )
+        .unwrap();
+        assert_eq!(status.state, HostedTraceStatus::Shared);
         assert!(!status.access_enabled);
     }
 

@@ -65,7 +65,9 @@ optional expiration. A disconnected user completes account approval without
 leaving the Trace or uploading evidence merely by connecting. Share progress,
 safe failure codes, link actions, access management, retry, and stop controls
 remain inline. Stopping public access never deletes the local Trace or changes
-its Notarized state.
+its Notarized state. Expiration remains distinct from an explicit stop, so an
+expired share can receive a new expiry through **Manage access** without a
+misleading resume step.
 
 ![Notarized Trace inspector in dark mode showing a passed local verification receipt with trace identity, verification time, notary key, and trust source.](images/admin-dashboard/trace-verification.png)
 
