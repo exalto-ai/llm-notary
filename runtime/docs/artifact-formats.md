@@ -7,7 +7,7 @@ Do not describe them interchangeably.
 | --- | --- | --- | --- |
 | `.llmcapture` | local vault-backed storage | no, deferred private state | no |
 | `.llmtrace` | local notarized storage | yes, with an external trusted key | only after reviewing disclosed bodies |
-| Public `trace.otlp.json` | hosted Library | no portable evidence | yes, for inspection |
+| Public `trace.otlp.json` | hosted public Traces | no portable evidence | yes, for inspection |
 
 ## Encrypted capture checkpoint
 

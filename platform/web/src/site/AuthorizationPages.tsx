@@ -342,9 +342,15 @@ export function HostedNotaryRecord({
           <span className="notary-selected">Selected by active_key_id</span>
         )}
       </header>
-      <h3>{lifecycle.label}</h3>
-      <p>{lifecycle.description}</p>
+      <h3>{record.name}</h3>
+      <p>
+        {lifecycle.label}. {lifecycle.description}
+      </p>
       <dl>
+        <div>
+          <dt>Operator</dt>
+          <dd>Operated by {record.operator}</dd>
+        </div>
         <div>
           <dt>Endpoint</dt>
           <dd>
@@ -356,7 +362,9 @@ export function HostedNotaryRecord({
           <dd>{record.transport.toUpperCase()}</dd>
         </div>
         <div className="notary-key-row">
-          <dt>Key ID / fingerprint</dt>
+          <dt>
+            {record.key_id === activeKeyId ? 'Active verification key' : 'Key ID / fingerprint'}
+          </dt>
           <dd>
             <code title={record.key_id}>{abbreviatedKeyId(record.key_id)}</code>
             <button type="button" onClick={() => onCopy(record.key_id)}>
@@ -385,7 +393,11 @@ export function HostedNotaryRecord({
   );
 }
 
-export function NotariesPage() {
+export function RegistryPage({
+  loadRegistry = getRegistry,
+}: {
+  loadRegistry?: typeof getRegistry;
+}) {
   const [registry, setRegistry] = useState<HostedRegistry | null>(null);
   const [error, setError] = useState<'malformed' | 'unavailable' | null>(null);
   const [reload, setReload] = useState(0);
@@ -394,7 +406,7 @@ export function NotariesPage() {
     let cancelled = false;
     setRegistry(null);
     setError(null);
-    getRegistry()
+    loadRegistry()
       .then((payload) => {
         if (cancelled) return;
         try {
@@ -409,7 +421,7 @@ export function NotariesPage() {
     return () => {
       cancelled = true;
     };
-  }, [reload]);
+  }, [loadRegistry, reload]);
   const copyKeyId = async (keyId: string) => {
     await navigator.clipboard.writeText(keyId);
     setCopiedKeyId(keyId);
@@ -421,8 +433,8 @@ export function NotariesPage() {
   return (
     <main className="notaries-shell">
       <header className="notaries-intro">
-        <span className="eyebrow">Public trust metadata</span>
-        <h1>Notaries and trust</h1>
+        <span className="eyebrow">Registry</span>
+        <h1>Official Notaries</h1>
         <p>
           This is the signing-key lifecycle Registry used by verification. It describes permitted
           protocol work and retained trust records; it does not report endpoint health, uptime, or

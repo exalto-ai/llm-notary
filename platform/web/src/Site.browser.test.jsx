@@ -16,9 +16,10 @@ import {
   Header,
   HostedNotaryRecord,
   Landing,
-  Library,
   ListedTracesPreview,
   PublicTracePage,
+  PublicTraces,
+  RegistryPage,
   SignInPage,
   VerificationPage,
 } from './site/SiteApp';
@@ -33,21 +34,28 @@ afterEach(async () => {
 
 const libraryShares = Array.from({ length: 20 }, (_, index) => ({
   trace_id: `share-${index + 1}`,
+  title: `Prompt for share-${index + 1}`,
   provider: index === 11 ? 'anthropic' : 'openai',
   model: index === 11 ? 'claude-sonnet-4-6' : 'gpt-5.2',
   publisher: 'fixture-user',
+  shared_at: Math.floor(Date.now() / 1000) - index * 24 * 60 * 60,
   authenticated_at_unix_ms: 1_786_000_000_000 - index,
   input_preview: `Prompt for share-${index + 1}`,
   output_preview: `Response for share-${index + 1}`,
+  password_protected: false,
   public_url: `https://example.test/s/share-${index + 1}`,
 }));
 
-const loadLibrary = async ({ limit = 20, cursor, search, provider } = {}) => {
+const loadLibrary = async ({ limit = 20, cursor, search, provider, shared_after } = {}) => {
   const query = search?.toLowerCase() || '';
   const matches = libraryShares.filter((share) => {
     const text =
       `${share.provider} ${share.model} ${share.publisher} ${share.input_preview} ${share.output_preview}`.toLowerCase();
-    return (!query || text.includes(query)) && (!provider || share.provider === provider);
+    return (
+      (!query || text.includes(query)) &&
+      (!provider || share.provider === provider) &&
+      (!shared_after || share.shared_at >= shared_after)
+    );
   });
   const offset = cursor ? Number(cursor) : 0;
   const items = matches.slice(offset, offset + limit);
@@ -133,7 +141,7 @@ const usageFixture = ({
 } = {}) => ({
   credits,
   operations: { captures, notarizations },
-  hosted_traces: { total, shared, verifying, stored_bytes: storedBytes },
+  hosted_traces: { total, shared, verifying, needs_attention: 0, stored_bytes: storedBytes },
 });
 
 describe('hosted site', () => {
@@ -160,8 +168,8 @@ describe('hosted site', () => {
     );
     await expect.element(page.getByRole('link', { name: 'Get started' })).not.toBeInTheDocument();
     await expect
-      .element(page.getByRole('link', { name: 'Browse Library' }))
-      .not.toBeInTheDocument();
+      .element(page.getByRole('link', { name: 'Browse Traces' }))
+      .toHaveAttribute('href', '#/traces');
     expect(document.querySelector('.receipt [data-provider-icon="openai"]')).not.toBeNull();
   });
 
@@ -179,6 +187,9 @@ describe('hosted site', () => {
       .toHaveAttribute('href', '/#/');
     await expect.element(page.getByText('Notary by Exalto')).toBeVisible();
     expect(Array.from(productNav.querySelectorAll('a'), (link) => link.textContent)).toEqual([
+      'Traces',
+      'Verify',
+      'Registry',
       'Docs',
       'Pricing',
       'Sign in',
@@ -191,8 +202,11 @@ describe('hosted site', () => {
       .element(footer.getByRole('link', { name: 'Verify' }))
       .toHaveAttribute('href', '/#/verify');
     await expect
-      .element(footer.getByRole('link', { name: 'Library' }))
-      .toHaveAttribute('href', '/#/library');
+      .element(footer.getByRole('link', { name: 'Traces' }))
+      .toHaveAttribute('href', '/#/traces');
+    await expect
+      .element(footer.getByRole('link', { name: 'Registry' }))
+      .toHaveAttribute('href', '/#/registry');
   });
 
   test('uses the endorsed identity in browser titles', async () => {
@@ -916,7 +930,7 @@ describe('hosted site', () => {
 
   test('keeps an OpenRouter icon when its model slug names an upstream vendor', async () => {
     render(
-      <Library
+      <PublicTraces
         loadShares={async () => ({
           items: [
             {
@@ -1156,13 +1170,65 @@ describe('hosted site', () => {
     );
 
     await expect.element(page.getByText('No lower bound configured')).toBeVisible();
+    await expect.element(page.getByRole('heading', { name: 'Alice' })).toBeVisible();
+    await expect.element(page.getByText(/Operated by Exalto/)).toBeVisible();
     await expect.element(page.getByText(/1969|1970/)).not.toBeInTheDocument();
   });
 
-  test('makes Library rows distinct and uncluttered on a phone', async () => {
+  test('presents the official Registry as named operators, keys, and trust history', async () => {
+    const activeKeyId = `sha256:${'a'.repeat(64)}`;
+    const historicalKeyId = `sha256:${'b'.repeat(64)}`;
+    render(
+      <RegistryPage
+        loadRegistry={async () => ({
+          format: 'notary/registry/v1',
+          generation: 7,
+          active_key_id: activeKeyId,
+          notaries: [
+            {
+              name: 'Alice',
+              operator: 'Exalto',
+              host: 'notary.exalto.ai',
+              port: 443,
+              transport: 'tls',
+              status: 'active',
+              key_id: activeKeyId,
+              verification_key: 'active-key',
+              valid_from_unix_ms: 1_786_000_000_000,
+              valid_until_unix_ms: null,
+              notarize_until_unix_ms: null,
+            },
+            {
+              name: 'Alice',
+              operator: 'Exalto',
+              host: 'retired-notary.exalto.ai',
+              port: 443,
+              transport: 'tls',
+              status: 'retired',
+              key_id: historicalKeyId,
+              verification_key: 'historical-key',
+              valid_from_unix_ms: 1_700_000_000_000,
+              valid_until_unix_ms: 1_750_000_000_000,
+              notarize_until_unix_ms: 1_760_000_000_000,
+            },
+          ],
+        })}
+      />,
+    );
+
+    await expect.element(page.getByRole('heading', { name: 'Official Notaries' })).toBeVisible();
+    await expect.element(page.getByText('Generation 7')).toBeVisible();
+    await expect.element(page.getByText('Active verification key').first()).toBeVisible();
+    await expect.element(page.getByRole('heading', { name: 'Trust history' })).toBeVisible();
+    expect(page.getByRole('heading', { name: 'Alice' }).elements()).toHaveLength(3);
+    expect(page.getByText(/Operated by Exalto/).elements()).toHaveLength(3);
+    await expect.element(page.getByText('Historical verification only')).toBeVisible();
+  });
+
+  test('makes public Trace rows distinct and uncluttered on a phone', async () => {
     await page.viewport(390, 760);
-    render(<Library loadShares={loadLibrary} />);
-    await expect.element(page.getByRole('heading', { name: 'Library' })).toBeVisible();
+    render(<PublicTraces loadShares={loadLibrary} />);
+    await expect.element(page.getByRole('heading', { name: 'Traces' })).toBeVisible();
     const row = page.getByRole('link', { name: /claude-sonnet-4-6/ });
     await expect.element(row).toBeVisible();
     expect(row.element().textContent).toContain('Prompt for share-12');
@@ -1173,7 +1239,7 @@ describe('hosted site', () => {
     expect(document.body.textContent).not.toContain('Listed shares');
   });
 
-  test('shows provider marks in the landing Library preview', async () => {
+  test('shows provider marks in the landing public Traces preview', async () => {
     let request;
     render(
       <ListedTracesPreview
@@ -1191,21 +1257,46 @@ describe('hosted site', () => {
     expect(preview.element().querySelectorAll('[data-provider-icon="anthropic"]')).toHaveLength(1);
   });
 
-  test('filters the Library by its public session summaries', async () => {
-    render(<Library loadShares={loadLibrary} />);
-    await expect.element(page.getByLabelText('Browse public sessions')).toBeVisible();
+  test('filters public Traces by their safe summaries', async () => {
+    render(<PublicTraces loadShares={loadLibrary} />);
+    await expect.element(page.getByLabelText('Browse public traces')).toBeVisible();
     const search = page.getByPlaceholder('Search conversations or models');
     await search.fill('claude');
     await expect.element(page.getByRole('link', { name: /claude-sonnet-4-6/ })).toBeVisible();
     await expect.element(page.getByRole('link', { name: /gpt-5.2/ })).not.toBeInTheDocument();
   });
 
-  test('keeps Library controls and reports a failed filtered request', async () => {
+  test('filters public Traces by date shared', async () => {
+    const requests = [];
+    render(
+      <PublicTraces
+        loadShares={async (options) => {
+          requests.push(options);
+          return loadLibrary(options);
+        }}
+      />,
+    );
+    await expect.element(page.getByText('20 traces shown')).toBeVisible();
+    await page.getByRole('combobox', { name: 'Date shared' }).click();
+    await page.getByRole('option', { name: 'Past 7 days' }).click();
+    await expect.element(page.getByText(/^[78] traces shown$/)).toBeVisible();
+    await expect
+      .element(page.getByText(/Date filters omit password-protected entries/))
+      .toBeVisible();
+    expect(requests.at(-1).shared_after).toBeGreaterThan(Math.floor(Date.now() / 1000) - 8 * 86400);
+  });
+
+  test('uses the settled empty state for public Traces', async () => {
+    render(<PublicTraces loadShares={async () => ({ items: [], next_cursor: null })} />);
+    await expect.element(page.getByText('No traces have been shared publicly yet.')).toBeVisible();
+  });
+
+  test('keeps public Trace controls and reports a failed filtered request', async () => {
     const loadShares = async (options) => {
       if (options.search) throw new Error('Search is temporarily unavailable.');
       return { items: [libraryShares[0]], next_cursor: 'old-cursor' };
     };
-    render(<Library loadShares={loadShares} />);
+    render(<PublicTraces loadShares={loadShares} />);
     await expect.element(page.getByRole('link', { name: /gpt-5.2/ })).toBeVisible();
 
     const search = page.getByPlaceholder('Search conversations or models');
@@ -1215,10 +1306,10 @@ describe('hosted site', () => {
     await expect.element(page.getByRole('link', { name: /gpt-5.2/ })).not.toBeInTheDocument();
   });
 
-  test('waits for an indexable Library search term', async () => {
+  test('waits for an indexable public Trace search term', async () => {
     let requests = 0;
     render(
-      <Library
+      <PublicTraces
         loadShares={async (options) => {
           requests += 1;
           return loadLibrary(options);
@@ -1236,7 +1327,7 @@ describe('hosted site', () => {
     expect(requests).toBe(beforeSearch);
   });
 
-  test('keeps Library filters while loading the next page', async () => {
+  test('keeps public Trace filters while loading the next page', async () => {
     const requests = [];
     const first = libraryShares[11];
     const second = {
@@ -1250,7 +1341,7 @@ describe('hosted site', () => {
         ? { items: [second], next_cursor: null }
         : { items: [first], next_cursor: 'next-library-page' };
     };
-    render(<Library loadShares={loadShares} />);
+    render(<PublicTraces loadShares={loadShares} />);
 
     const search = page.getByPlaceholder('Search conversations or models');
     await search.fill('claude');
@@ -1264,7 +1355,7 @@ describe('hosted site', () => {
     });
   });
 
-  test('discards an old Library continuation after filters change', async () => {
+  test('discards an old public Trace continuation after filters change', async () => {
     let resolveOldPage;
     let markLoadStarted;
     const loadStarted = new Promise((resolve) => {
@@ -1287,7 +1378,7 @@ describe('hosted site', () => {
       if (options.search === 'claude') return { items: [filtered], next_cursor: null };
       return { items: [initial], next_cursor: 'old-cursor' };
     };
-    render(<Library loadShares={loadShares} />);
+    render(<PublicTraces loadShares={loadShares} />);
 
     await expect.element(page.getByRole('button', { name: 'Load more traces' })).toBeVisible();
     await page.getByRole('button', { name: 'Load more traces' }).click();
@@ -1343,7 +1434,7 @@ describe('hosted site', () => {
   test('does not treat a bare legacy trace as a package-backed preview', async () => {
     let traceLoads = 0;
     render(
-      <Library
+      <PublicTraces
         loadShares={async () => ({
           items: [
             {
@@ -1402,7 +1493,7 @@ describe('hosted site', () => {
     const loadShare = async () => ({
       trace_id: 'share-12',
       title: 'Compare these two evidence trails.',
-      visibility: 'unlisted',
+      visibility: 'listed',
       password_protected: false,
       expires_at: null,
       publisher: 'fixture-user',
@@ -1414,6 +1505,8 @@ describe('hosted site', () => {
       notarized_state: 'notarized',
       hosted_verification: 'passed',
       notary_key_id: 'sha256:abc',
+      notary_name: 'Alice',
+      notary_operator: 'Exalto',
       registry_generation: 42,
       trust_source: 'hosted_registry',
       content_sha256: 'b'.repeat(64),
@@ -1481,9 +1574,11 @@ describe('hosted site', () => {
       ],
     });
     render(<PublicTracePage traceId="share-12" loadShare={loadShare} loadTrace={loadTrace} />);
-    await expect.element(page.getByRole('heading', { name: 'Conversation' })).toBeVisible();
-    await expect.element(page.getByText('Compare these two evidence trails.')).toBeVisible();
-    await expect.element(page.getByText('The second trail is stronger.')).toBeVisible();
+    const conversation = page.getByRole('region', { name: 'Conversation' });
+    await expect
+      .element(conversation.getByText('Compare these two evidence trails.'))
+      .toBeVisible();
+    await expect.element(conversation.getByText('The second trail is stronger.')).toBeVisible();
     const tool = page.getByText('lookup_record');
     await expect.element(tool).toBeVisible();
     expect(tool.element().closest('details')?.open).toBe(false);
@@ -1493,7 +1588,44 @@ describe('hosted site', () => {
     await expect.element(toolResult).toBeVisible();
     await toolResult.click();
     await expect.element(page.getByText('fixture record 42')).toBeVisible();
-    await expect.element(page.getByRole('link', { name: /Download .llmtrace/ })).toBeVisible();
+    await expect
+      .element(page.getByRole('heading', { name: 'Compare these two evidence trails.' }))
+      .toBeVisible();
+    expect(document.querySelector('.share-verification-mark b')?.textContent).toBe('Notarized');
+    await expect.element(page.getByText('Hosted verification passed')).toBeVisible();
+    await expect.element(page.getByText(/Notarized by Alice · Operated by Exalto/)).toBeVisible();
+    await expect.element(page.getByRole('link', { name: /Export .llmtrace/ })).toBeVisible();
+    await expect.element(page.getByRole('button', { name: 'Copy link' })).toBeVisible();
+    await expect.element(page.getByRole('link', { name: 'Verify independently' })).toBeVisible();
+    await page.getByText('Hashes and notary').click();
+    await expect.element(page.getByText('4,096 bytes')).toBeVisible();
+    await expect.element(page.getByText('c'.repeat(64))).toBeVisible();
+    expect(document.title).toBe('Compare these two evidence trails. · Notary by Exalto');
+    expect(document.querySelector('meta[name="robots"]')?.getAttribute('content')).toContain(
+      'noindex',
+    );
+    expect(document.querySelector('link[rel="canonical"]')?.getAttribute('href')).toContain(
+      '/s/share-12',
+    );
+    expect(document.querySelector('meta[property="og:url"]')?.getAttribute('content')).toContain(
+      '/s/share-12',
+    );
+    expect(
+      page.getByRole('link', { name: 'Verify independently' }).element().getAttribute('href'),
+    ).toBe('/#/docs/trace-packages');
+
+    cleanup();
+    render(
+      <PublicTracePage
+        traceId="share-12"
+        loadShare={async () => ({ ...(await loadShare()), visibility: 'unlisted' })}
+        loadTrace={loadTrace}
+      />,
+    );
+    await expect
+      .element(page.getByRole('heading', { name: 'Compare these two evidence trails.' }))
+      .toBeVisible();
+    expect(document.title).toBe('Shared trace · Notary by Exalto');
     expect(document.querySelector('meta[name="robots"]')?.getAttribute('content')).toContain(
       'noindex',
     );
@@ -1521,6 +1653,8 @@ describe('hosted site', () => {
         notarized_state: 'notarized',
         hosted_verification: 'passed',
         notary_key_id: 'sha256:abc',
+        notary_name: 'Alice',
+        notary_operator: 'Exalto',
         registry_generation: 42,
         trust_source: 'hosted_registry',
         content_sha256: 'b'.repeat(64),
@@ -1554,13 +1688,23 @@ describe('hosted site', () => {
       />,
     );
 
-    await expect.element(page.getByRole('heading', { name: 'Password required' })).toBeVisible();
+    await expect.element(page.getByRole('heading', { name: 'Open shared trace' })).toBeVisible();
     expect(document.querySelector('meta[name="robots"]')?.getAttribute('content')).toContain(
       'noindex',
     );
+    await page.getByLabelText('Password').fill('wrong-password');
+    await page.getByRole('button', { name: 'Open trace' }).click();
+    await expect
+      .element(page.getByRole('alert').getByText('That password did not open this trace.'))
+      .toBeVisible();
     await page.getByLabelText('Password').fill('evidence-pass');
     await page.getByRole('button', { name: 'Open trace' }).click();
-    await expect.element(page.getByText('Prompt for protected-share')).toBeVisible();
+    await expect
+      .element(
+        page.getByRole('region', { name: 'Conversation' }).getByText('Prompt for protected-share'),
+      )
+      .toBeVisible();
+    expect(document.title).toBe('Shared trace · Notary by Exalto');
     expect(document.querySelector('meta[name="robots"]')?.getAttribute('content')).toContain(
       'noindex',
     );
@@ -1577,6 +1721,36 @@ describe('hosted site', () => {
       { reason: 'spam', message: 'The listing misrepresents the disclosed response.' },
     ]);
     await expect.element(page.getByRole('heading', { name: 'Report received' })).toBeVisible();
+  });
+
+  test('uses generic, non-indexed public responses for unavailable shares', async () => {
+    render(
+      <PublicTracePage
+        traceId="unavailable-share"
+        loadShare={async () => {
+          throw new PlatformApiError('Storage backend failed', 503, 'storage_unavailable');
+        }}
+        loadTrace={async () => {
+          throw new PlatformApiError('Trace content failed', 503, 'storage_unavailable');
+        }}
+      />,
+    );
+
+    await expect
+      .element(page.getByRole('heading', { name: 'Shared trace unavailable' }))
+      .toBeVisible();
+    await expect
+      .element(page.getByText(/expired, stopped, missing, or temporarily unavailable/))
+      .toBeVisible();
+    await expect
+      .element(page.getByRole('link', { name: 'Open public Traces' }))
+      .toHaveAttribute('href', '/#/traces');
+    expect(document.body.textContent).not.toContain('Storage backend failed');
+    expect(document.body.textContent).not.toContain('Trace content failed');
+    expect(document.querySelector('meta[name="robots"]')?.getAttribute('content')).toContain(
+      'noindex',
+    );
+    expect(document.title).toBe('Shared trace · Notary by Exalto');
   });
 
   test('manages access and unpublishes an admitted trace from the account', async () => {
@@ -1652,7 +1826,7 @@ describe('hosted site', () => {
     await page.getByRole('button', { name: 'Manage access' }).click();
     const dialogBounds = page.getByRole('dialog').element().getBoundingClientRect();
     const visibilityWidth = page
-      .getByRole('combobox', { name: 'Library visibility' })
+      .getByRole('combobox', { name: 'Public discovery' })
       .element()
       .getBoundingClientRect().width;
     expect(visibilityWidth).toBeGreaterThan(dialogBounds.width * 0.8);
@@ -1758,7 +1932,9 @@ describe('hosted site', () => {
       />,
     );
     const input = document.querySelector('input[type="file"]');
-    expect(input.getAttribute('accept')).toBeNull();
+    expect(input.getAttribute('accept')).toBe(
+      '.llmtrace,application/vnd.exalto.notary.trace-package+zip',
+    );
     const file = new File(['sanitized fixture'], 'sanitized.llmtrace', {
       type: 'application/vnd.exalto.notary.trace-package+zip',
     });
@@ -1807,6 +1983,29 @@ describe('hosted site', () => {
       .element(page.getByRole('heading', { name: 'File type is unsupported' }))
       .toBeVisible();
     expect(calls).toBe(0);
+  });
+
+  test('presents safe verification failure and unsupported-version results', async () => {
+    const renderFailure = async (code, heading) => {
+      cleanup();
+      render(
+        <VerificationPage
+          verifyFile={async () => {
+            throw new PlatformApiError('Safe verifier detail', 422, code);
+          }}
+        />,
+      );
+      const input = document.querySelector('input[type="file"]');
+      fireEvent.change(input, { target: { files: [new File(['package'], 'trace.llmtrace')] } });
+      await page.getByRole('checkbox').click();
+      await page.getByRole('button', { name: 'Verify package' }).click();
+      await expect.element(page.getByRole('heading', { name: heading })).toBeVisible();
+      await expect.element(page.getByText(code)).toBeVisible();
+      expect(document.body.textContent).not.toContain('Safe verifier detail');
+    };
+
+    await renderFailure('tampered_package', 'Package verification failed');
+    await renderFailure('unsupported_version', 'Package version is unsupported');
   });
 
   test('ignores an in-flight verification result after the selected file changes', async () => {

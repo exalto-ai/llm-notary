@@ -92,7 +92,7 @@ This service is a convenience verifier. Independent verification uses the same
 runtime contracts and a chosen trusted-key history. A successful live response
 must not be described as a signed or durable attestation.
 
-## Hosted Trace and Library flow
+## Hosted Trace and public Traces flow
 
 Sharing is separate from capture, notarization, and one-off verification:
 
@@ -105,15 +105,15 @@ Sharing is separate from capture, notarization, and one-off verification:
    upload with its declared size and SHA-256.
 4. A worker re-downloads the intake object, applies the versioned disclosure
    safety policy, cryptographically verifies the package, reproduces the
-   canonical trace, and materializes bounded Library facts.
+   canonical trace, and materializes bounded public discovery facts.
 5. Admission stores the exact verified package and canonical trace, then
    deletes the private intake object. Failed deletion enters the durable cleanup
    queue.
 6. Unlisted and Listed Traces are both readable by anyone with an allowed link.
-   Listed adds Library discovery. Owners can later stop sharing, set an expiry, or
+   Listed adds public discovery. Owners can later stop sharing, set an expiry, or
    require a password without changing the retained package bytes.
 
-Visitors can inspect the rendered trace or download the exact admitted package
+Visitors can inspect the rendered trace or export the exact admitted package
 for independent verification. Password, expiry, publication state, publisher
 label, popularity, and reports are hosted observations and access controls, not
 cryptographic facts. See [Share intake](share-intake-v1.md) and [Share
@@ -151,7 +151,7 @@ review.
 | Admission and settlement | `POST /api/notary/admissions`, `POST /api/internal/notary/admissions/redeem`, `POST /api/internal/notary/operations/activate`, `POST /api/internal/notary/operations/settle` |
 | Billing and credits | `POST /api/billing/stripe/webhook`, `POST /api/billing/checkout-sessions`, `POST /api/billing/subscription-checkout-sessions`, `POST /api/billing/portal-sessions`, `GET /api/billing/purchases`, `GET /api/billing/purchases/{purchase_id}`, `GET /api/credit-offers`, `POST /api/credit-offers/{offer_id}/claim`, `GET /api/credits/history` |
 | Hosted Trace submission and owner management | `POST /api/traces`, `GET /api/traces`, `GET /api/traces/{trace_id}`, `POST /api/traces/{trace_id}/upload-completion`, `PATCH /api/traces/{trace_id}`, `DELETE /api/traces/{trace_id}/share` |
-| Public Library and Trace access | `GET /api/public/traces`, `GET /api/public/traces/{trace_id}`, `POST /api/public/traces/{trace_id}/access`, `GET /api/public/traces/{trace_id}/content`, `GET /api/public/traces/{trace_id}/trace.otlp.json`, `GET /api/public/traces/{trace_id}/package.llmtrace`, `POST /api/public/traces/{trace_id}/reports` |
+| Public Traces and Trace access | `GET /api/public/traces`, `GET /api/public/traces/{trace_id}`, `POST /api/public/traces/{trace_id}/access`, `GET /api/public/traces/{trace_id}/content`, `GET /api/public/traces/{trace_id}/trace.otlp.json`, `GET /api/public/traces/{trace_id}/package.llmtrace`, `POST /api/public/traces/{trace_id}/reports` |
 | Retention-free verification | `POST /api/verify` |
 
 ## Deployment and data ownership

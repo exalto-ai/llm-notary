@@ -160,7 +160,7 @@ Report `outcome`, `verified_at_unix_ms`, `notary_key_id`, and `trust_source`.
 Do not translate a successful checkpoint read into a verification claim.
 
 If the user separately approves public sharing, submit the Trace identifier,
-defaulting to Unlisted unless they request Library discovery, and
+defaulting to Unlisted unless they request public discovery, and
 follow admission through the local service:
 
 ```bash

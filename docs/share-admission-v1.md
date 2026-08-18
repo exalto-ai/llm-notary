@@ -59,13 +59,13 @@ An unreferenced candidate object is not reachable. The atomic transition to
 
 Unlisted Traces are reachable by stable link but excluded from
 `GET /api/public/traces`; detail and artifact responses include
-`X-Robots-Tag: noindex, nofollow, noarchive`. Listed Traces also appear in the
-Library.
+`X-Robots-Tag: noindex, nofollow, noarchive`. Listed Traces also appear in
+public Traces.
 
 Password-protected Listed entries disclose only generic discovery fields. They
 do not reveal provider, model, publisher, timestamp, title, prompt/response
 preview, or provider-filter/search matches before access. Expired and stopped
-Traces are excluded from the Library and unavailable from every public route.
+Traces are excluded from public Traces and unavailable from every public route.
 
 ## Public API
 

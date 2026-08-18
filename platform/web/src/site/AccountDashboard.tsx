@@ -751,17 +751,17 @@ function HostedTraceSettingsDialog({
         </DialogHeader>
         <form onSubmit={submit}>
           <label htmlFor="share-settings-visibility">
-            <span>Library visibility</span>
+            <span>Public discovery</span>
             <Select
               value={visibility}
               onValueChange={(value) => setVisibility(value as 'unlisted' | 'listed')}
             >
-              <SelectTrigger id="share-settings-visibility" aria-label="Library visibility">
+              <SelectTrigger id="share-settings-visibility" aria-label="Public discovery">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="unlisted">Unlisted · link only</SelectItem>
-                <SelectItem value="listed">Listed · shown in Library</SelectItem>
+                <SelectItem value="listed">Listed · shown in public Traces</SelectItem>
               </SelectContent>
             </Select>
           </label>

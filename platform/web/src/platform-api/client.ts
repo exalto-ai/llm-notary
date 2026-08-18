@@ -39,13 +39,16 @@ function errorMessage(error: unknown, fallback: string): string {
 type PageOptions = { limit?: number; cursor?: string };
 
 export async function getListedTraces(
-  options: PageOptions & { search?: string; provider?: string } = {},
+  options: PageOptions & { search?: string; provider?: string; shared_after?: number } = {},
 ) {
   const { data, error, response } = await client.GET('/api/public/traces', {
     params: { query: options },
   });
   if (!response.ok || !data) {
-    throw new PlatformApiError(errorMessage(error, 'Could not load the Library.'), response.status);
+    throw new PlatformApiError(
+      errorMessage(error, 'Could not load public Traces.'),
+      response.status,
+    );
   }
   return data;
 }
@@ -470,7 +473,11 @@ export async function verifyTracePackage(file: File): Promise<HostedVerification
     throw new PlatformApiError('verification_unavailable', response.status);
   }
   if (!response.ok) {
-    throw new PlatformApiError(errorMessage(payload, 'verification_unavailable'), response.status);
+    throw new PlatformApiError(
+      errorMessage(payload, 'verification_unavailable'),
+      response.status,
+      errorCode(payload),
+    );
   }
   if (
     !payload ||
