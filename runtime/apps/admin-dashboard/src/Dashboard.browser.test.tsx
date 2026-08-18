@@ -5,21 +5,54 @@ import { cleanup, render } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { page, userEvent } from 'vitest/browser';
 import { type LocalApi, LocalApiError, type TraceSummary } from './api';
-import { Dashboard } from './Dashboard';
+import { Dashboard, type DesktopSettingsAction, type DesktopSettingsState } from './Dashboard';
 import { createFixtureApi, fixtureCaptures, fixtureNotaries } from './fixtures';
 import '@mantine/core/styles.css';
 import '@mantine/notifications/styles.css';
 
 const theme = createTheme({ defaultRadius: 0, primaryColor: 'dark' });
 
-function renderDashboard(hash = '/overview', api: LocalApi = createFixtureApi(), embedded = false) {
+const desktopSettings: DesktopSettingsState = {
+  launch_at_login: true,
+  launch_ready: true,
+  vault_label: 'Protected by Keychain',
+  vault_detail: 'The vault key is protected by this Mac.',
+  app_version: '0.1.0',
+  app_build_id: 'desktop-build-a',
+  update: {
+    enabled: true,
+    phase: 'ready',
+    current_build_id: 'desktop-build-a',
+    latest_build_id: 'desktop-build-b',
+    downloaded_bytes: 42 * 1024 * 1024,
+    total_bytes: 42 * 1024 * 1024,
+    message: 'The signed update is ready.',
+  },
+  update_busy: false,
+  restart_block_reason: null,
+  notice: null,
+};
+
+function renderDashboard(
+  hash = '/overview',
+  api: LocalApi = createFixtureApi(),
+  embedded = false,
+  settings: DesktopSettingsState | null = null,
+  onDesktopSettingsAction?: (action: DesktopSettingsAction) => void,
+) {
   window.location.hash = hash;
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <MantineProvider theme={theme} defaultColorScheme="auto">
       <Notifications />
       <QueryClientProvider client={queryClient}>
-        <Dashboard api={api} fixture embedded={embedded} />
+        <Dashboard
+          api={api}
+          fixture
+          embedded={embedded}
+          desktopSettings={settings}
+          onDesktopSettingsAction={onDesktopSettingsAction}
+        />
       </QueryClientProvider>
     </MantineProvider>,
   );
@@ -171,7 +204,7 @@ describe('Notary admin dashboard', () => {
     await expect.element(page.getByText('Attempt 1', { exact: true })).toBeVisible();
     await page.getByRole('button', { name: 'View Trace activity' }).click();
     await expect
-      .element(page.getByLabelText('Activity trace ID'))
+      .element(page.getByLabelText('Activity Trace ID'))
       .toHaveValue('trc-20260728-safety-review');
 
     cleanup();
@@ -304,10 +337,40 @@ describe('Notary admin dashboard', () => {
     renderDashboard('/providers');
     await expect.element(page.getByRole('heading', { name: 'Providers' })).toBeVisible();
     await expect.element(page.getByText('Local admin').first()).toBeVisible();
-    await expect.element(page.getByRole('heading', { name: 'OpenAI' })).toBeVisible();
+    await expect.element(page.getByRole('heading', { name: 'OpenAI', exact: true })).toBeVisible();
+    await expect
+      .poll(() =>
+        Array.from(document.querySelectorAll('.provider-route h2')).map((heading) =>
+          heading.textContent?.trim(),
+        ),
+      )
+      .toEqual(['OpenAI', 'OpenAI Codex', 'Anthropic', 'DeepSeek', 'OpenRouter']);
     await expect.element(page.getByText('api.openai.com', { exact: true }).first()).toBeVisible();
     await expect.element(page.getByText('http://127.0.0.1:8787/openai/v1')).toBeVisible();
+    await expect.element(page.getByText('http://127.0.0.1:8787/codex')).toBeVisible();
     await expect.element(page.getByText('Ready', { exact: true }).first()).toBeVisible();
+    await expect.element(page.getByText(/client still selects its provider model/)).toBeVisible();
+    await expect
+      .element(page.getByText('On — supported requests create Traces', { exact: true }).first())
+      .toBeVisible();
+    await expect
+      .element(page.getByText('Use the OpenAI Responses client with this base URL.'))
+      .toBeVisible();
+    await expect
+      .element(page.getByText('Use Codex CLI with its saved ChatGPT login and this base URL.'))
+      .toBeVisible();
+    await expect.element(page.getByText('Ollama', { exact: true })).not.toBeInTheDocument();
+    await expect.element(page.getByPlaceholder('Provider host')).not.toBeInTheDocument();
+  });
+
+  test('copies provider setup without moving credentials or model selection into Notary', async () => {
+    const writeText = vi.spyOn(navigator.clipboard, 'writeText').mockResolvedValue();
+    renderDashboard('/providers');
+    await page.getByRole('button', { name: 'Copy OpenAI base URL' }).click();
+    expect(writeText).toHaveBeenCalledWith('http://127.0.0.1:8787/openai/v1');
+    await expect
+      .element(page.getByText(/key environment variable and model selection unchanged/).first())
+      .toBeVisible();
   });
 
   test('keeps provider routes out of Settings and preserves the required group order', async () => {
@@ -469,10 +532,89 @@ describe('Notary admin dashboard', () => {
 
   test('uses the same route content in embedded mode without standalone navigation', async () => {
     renderDashboard('/providers', createFixtureApi(), true);
-    await expect.element(page.getByRole('heading', { name: 'Providers' })).toBeVisible();
+    await expect.element(page.getByRole('heading', { name: 'OpenAI', exact: true })).toBeVisible();
+    await expect.element(page.getByRole('heading', { name: 'Providers' })).not.toBeInTheDocument();
     await expect
       .element(page.getByRole('navigation', { name: 'Admin dashboard' }))
       .not.toBeInTheDocument();
+  });
+
+  test('uses exactly five Settings groups in embedded desktop mode', async () => {
+    const actions: DesktopSettingsAction[] = [];
+    renderDashboard('/settings', createFixtureApi(), true, desktopSettings, (action) =>
+      actions.push(action),
+    );
+    await expect
+      .poll(() =>
+        Array.from(document.querySelectorAll('.settings-group-title')).map(
+          (heading) => heading.textContent,
+        ),
+      )
+      .toEqual(['General', 'Account', 'Security', 'Updates', 'Advanced']);
+    await expect.element(page.getByRole('switch', { name: 'Capture new requests' })).toBeChecked();
+    await expect
+      .element(page.getByRole('switch', { name: 'Open Notary at sign-in' }))
+      .toBeChecked();
+    await expect
+      .element(page.getByText(/Closing the window leaves Notary available/))
+      .toBeVisible();
+    await expect
+      .element(page.getByText('Menu-bar controller', { exact: true }))
+      .not.toBeInTheDocument();
+    await page.getByRole('switch', { name: 'Capture new requests' }).click();
+    await expect
+      .element(page.getByText('Off — requests pass through locally and create no Trace.'))
+      .toBeVisible();
+    await page.getByRole('switch', { name: 'Open Notary at sign-in' }).click();
+    await page.getByRole('button', { name: 'Check now' }).click();
+    await page.getByRole('button', { name: 'Restart to update' }).click();
+    expect(actions).toEqual([
+      { action: 'set_launch_at_login', enabled: false },
+      { action: 'check_for_updates' },
+      { action: 'restart_to_update' },
+    ]);
+  });
+
+  test('shows embedded account, local-data, Notaries, update, and Advanced consequences', async () => {
+    renderDashboard('/settings', createFixtureApi(), true, desktopSettings);
+    await expect.element(page.getByText('Sample User', { exact: true })).toBeVisible();
+    await expect.element(page.getByText(/does not upload or share local Traces/)).toBeVisible();
+    await expect.element(page.getByText('Local data', { exact: true })).toBeVisible();
+    await expect.element(page.getByRole('heading', { name: 'Alice' })).toBeVisible();
+    await expect
+      .element(page.getByText('Operated by Exalto', { exact: true }).first())
+      .toBeVisible();
+    await expect.element(page.getByText('Active verification key', { exact: true })).toBeVisible();
+    await page.getByText('View details', { exact: true }).click();
+    await expect.element(page.getByText('Verification key', { exact: true }).first()).toBeVisible();
+    await expect.element(page.getByText('ai.exalto.notary', { exact: false })).toBeVisible();
+    await expect.element(page.getByText('Service', { exact: true })).toBeVisible();
+    await expect.element(page.getByText('Developer', { exact: true })).toBeVisible();
+    await expect.element(page.getByText('Provider routes')).not.toBeInTheDocument();
+  });
+
+  test('renders reconnect and blocked-update states without implying local upload', async () => {
+    const fixture = createFixtureApi();
+    const readyUpdate = desktopSettings.update;
+    if (!readyUpdate) throw new Error('desktop update fixture is required');
+    const api: LocalApi = {
+      ...fixture,
+      account: async () => ({
+        signed_in: false,
+        connection_state: 'reauthorization_required',
+        links: (await fixture.account()).links,
+      }),
+    };
+    renderDashboard('/settings', api, true, {
+      ...desktopSettings,
+      update: { ...readyUpdate, phase: 'ready' },
+      restart_block_reason: 'Finish the active notarization before restarting.',
+    });
+    await expect.element(page.getByRole('button', { name: 'Reconnect' })).toBeVisible();
+    await expect
+      .element(page.getByText('Finish the active notarization before restarting.'))
+      .toBeVisible();
+    await expect.element(page.getByRole('button', { name: 'Restart to update' })).toBeDisabled();
   });
 
   test('uses an accessible navigation drawer on narrow screens', async () => {
@@ -496,10 +638,62 @@ describe('Notary admin dashboard', () => {
       },
     };
     renderDashboard('/activity', api);
-    await page.getByLabelText('Activity event type').fill('notarization_completed');
+    await expect.element(page.getByRole('combobox', { name: 'Activity severity' })).toBeVisible();
+    await expect
+      .element(page.getByRole('combobox', { name: 'Activity time filter' }))
+      .toBeVisible();
+    await expect.element(page.getByLabelText('Activity Trace ID')).toBeVisible();
+    await expect.element(page.getByLabelText('Activity operation ID')).not.toBeInTheDocument();
+    await page.getByRole('button', { name: 'More filters' }).click();
+    await page.getByLabelText('Activity raw event name').fill('notarization_completed');
     await expect.poll(() => receivedFilters.event_type).toBe('notarization_completed');
     await expect.element(page.getByText('Notarization completed').first()).toBeVisible();
     await expect.element(page.getByText('Notarization failed')).not.toBeInTheDocument();
+  });
+
+  test('opens Trace-linked activity and keeps safe technical details inspectable', async () => {
+    renderDashboard('/activity');
+    const failed = page.getByText('Notarization failed', { exact: true }).first();
+    await expect.element(failed).toBeVisible();
+    const failedRow = Array.from(document.querySelectorAll<HTMLElement>('.event-row')).find((row) =>
+      row.textContent?.includes('Notarization failed'),
+    );
+    const technicalDetails = failedRow?.querySelector<HTMLElement>('summary');
+    if (!technicalDetails) throw new Error('failed Activity details are missing');
+    await userEvent.click(technicalDetails);
+    await expect.element(page.getByText('notary_capacity', { exact: true })).toBeVisible();
+    await expect.element(page.getByText('notarization_failed', { exact: true })).toBeVisible();
+    await page.getByRole('button', { name: 'Trace ID · trc-20260728-safety-review' }).click();
+    await expect.element(page.getByRole('button', { name: 'Copy Trace ID' })).toBeVisible();
+    expect(window.location.hash).toBe('#/traces/trc-20260728-safety-review');
+  });
+
+  test('keeps service-only events inspectable and Activity free of Trace contents', async () => {
+    const fixture = createFixtureApi();
+    const api: LocalApi = {
+      ...fixture,
+      events: async () => ({
+        items: [
+          {
+            event_id: 99,
+            created_at_unix_ms: Date.now(),
+            event_type: 'capture_enabled',
+            severity: 'info',
+            message: 'Capture enabled',
+          },
+        ],
+        next_cursor: null,
+        high_water_cursor: null,
+      }),
+    };
+    renderDashboard('/activity', api);
+    await expect.element(page.getByText('Capture turned on', { exact: true })).toBeVisible();
+    await expect.element(page.getByText('Service event', { exact: true })).toBeVisible();
+    await page.getByText('Technical details').click();
+    await expect.element(page.getByText('capture_enabled', { exact: true })).toBeVisible();
+    await expect
+      .element(page.getByText(fixtureCaptures[0].prompt_preview, { exact: true }))
+      .not.toBeInTheDocument();
   });
 
   test('uses a separate trace list and detail view on mobile', async () => {

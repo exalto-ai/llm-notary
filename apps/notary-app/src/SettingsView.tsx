@@ -6,13 +6,12 @@ import {
   type DesktopState,
   type DesktopUpdateState,
 } from './bridge';
+import { updateRestartBlockReason, vaultProtection } from './product';
 import {
-  formatBytes,
-  StatusDot,
-  updateRestartBlockReason,
-  vaultProtection,
-} from './product';
-import { WorkspaceFrame } from './Shell';
+  type DesktopSettingsAction,
+  type DesktopSettingsPayload,
+  WorkspaceFrame,
+} from './Shell';
 
 export function SettingsView({
   state,
@@ -30,22 +29,15 @@ export function SettingsView({
   onRestartToUpdate: () => void;
 }) {
   const [launch, setLaunch] = useState(false);
-  const [ready, setReady] = useState(false);
+  const [launchReady, setLaunchReady] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const vault = vaultProtection(state.vault_mode);
-  const requiresSessionUnlock = state.vault_mode === 'passphrase';
-  const restartBlock = updateRestartBlockReason(state);
-  const updateBusy = updateState?.phase === 'checking'
-    || updateState?.phase === 'downloading'
-    || updateState?.phase === 'installing'
-    || busy === 'update-check'
-    || busy === 'update-install';
-  const progress = updateState?.total_bytes
-    ? Math.min(100, (updateState.downloaded_bytes / updateState.total_bytes) * 100)
-    : 0;
 
   useEffect(() => {
-    void getLaunchAtLogin().then((enabled) => { setLaunch(enabled); setReady(true); });
+    void getLaunchAtLogin()
+      .then((enabled) => setLaunch(enabled))
+      .catch((error) => setMessage(errorMessage(error)))
+      .finally(() => setLaunchReady(true));
   }, []);
 
   const changeLaunch = async (enabled: boolean) => {
@@ -53,80 +45,143 @@ export function SettingsView({
     try {
       await setLaunchAtLogin(enabled);
       setLaunch(enabled);
-      setMessage(enabled
-        ? requiresSessionUnlock
-          ? 'Notary will open locked when you sign in.'
-          : 'Notary will open when you sign in.'
-        : 'Launch at sign-in is off.');
+      setMessage(enabled ? 'Open at sign-in is on.' : 'Open at sign-in is off.');
     } catch (error) {
       setMessage(errorMessage(error));
     }
   };
 
-  return <div className="native-page preferences-page">
-    <section className="preference-section">
-      <h2>General</h2>
-      <div className="preference-group">
-        <label className="preference-row">
-          <div><strong>Open Notary at sign-in</strong><span>{requiresSessionUnlock ? 'The app opens locked; enter the vault passphrase to start capture.' : 'Keep capture available from the menu bar.'}</span></div>
-          <input type="checkbox" role="switch" checked={launch} disabled={!ready} onChange={(event) => void changeLaunch(event.target.checked)} />
-        </label>
-        <div className="preference-row"><div><strong>Menu-bar controller</strong><span>Closing the window keeps the background service available.</span></div><span className="value-label"><StatusDot running />Active</span></div>
-      </div>
-    </section>
-    <section className="preference-section">
-      <h2>Software updates</h2>
-      <div className="preference-group update-preferences">
-        <div className="preference-row update-summary-row">
-          <div>
-            <strong>{updateState?.phase === 'ready'
-              ? 'The latest release is ready'
-              : updateState?.phase === 'current'
-                ? 'Notary is up to date'
-                : updateState?.phase === 'downloading'
-                  ? 'Downloading the latest release'
-                  : updateState?.phase === 'error'
-                    ? 'Could not check for updates'
-                    : updateState?.enabled === false
-                      ? 'Updates are off in this build'
-                      : 'Automatically stay on the latest release'}</strong>
-            <span>{updateState?.message ?? 'Checking the signed latest release in the background.'}</span>
+  const handleDesktopAction = (action: DesktopSettingsAction) => {
+    if (action.action === 'set_launch_at_login') void changeLaunch(action.enabled);
+    if (action.action === 'check_for_updates') onCheckUpdate();
+    if (action.action === 'restart_to_update') onRestartToUpdate();
+  };
+
+  const desktopSettings: DesktopSettingsPayload = {
+    launch_at_login: launch,
+    launch_ready: launchReady,
+    vault_label: vault.label,
+    vault_detail: vault.detail,
+    app_version: state.app_version,
+    app_build_id: state.app_build_id,
+    update: updateState,
+    update_busy: busy === 'update-check' || busy === 'update-install',
+    restart_block_reason: updateRestartBlockReason(state),
+    notice: message ?? notice,
+  };
+
+  if (!state.running) {
+    const restartBlock = updateRestartBlockReason(state);
+    const updateBusy = busy === 'update-check' || busy === 'update-install';
+    return (
+      <div className="native-page preferences-page offline-settings-page">
+        <section className="preference-section">
+          <h2>General</h2>
+          <div className="preference-group">
+            <div className="preference-row">
+              <div>
+                <strong>Capture new requests</strong>
+                <span>Unavailable while the local service is stopped.</span>
+              </div>
+              <input type="checkbox" role="switch" aria-label="Capture new requests" disabled />
+            </div>
+            <label className="preference-row">
+              <div>
+                <strong>Open Notary at sign-in</strong>
+                <span>Closing the window leaves Notary available from the menu bar.</span>
+              </div>
+              <input
+                type="checkbox"
+                role="switch"
+                checked={launch}
+                disabled={!launchReady}
+                onChange={(event) => void changeLaunch(event.target.checked)}
+              />
+            </label>
           </div>
-          {updateState?.phase === 'ready'
-            ? <button className="mac-button is-primary" onClick={onRestartToUpdate} disabled={Boolean(restartBlock) || updateBusy}>Restart to update</button>
-            : <button className="mac-button" onClick={onCheckUpdate} disabled={!updateState?.enabled || updateBusy}>{updateBusy ? 'Working…' : 'Check now'}</button>}
-        </div>
-        {updateState?.phase === 'downloading' && <div className="update-progress-row">
-          <span><i style={{ width: `${progress}%` }} /></span>
-          <small>{formatBytes(updateState.downloaded_bytes)} of {updateState.total_bytes ? formatBytes(updateState.total_bytes) : 'the update'}</small>
-        </div>}
-        {updateState?.phase === 'ready' && restartBlock && <p className="preference-note update-block-note">{restartBlock} The update will stay ready.</p>}
-        {updateState?.phase === 'ready' && requiresSessionUnlock && <p className="preference-note">After restart, enter the vault passphrase to resume capture.</p>}
-        <p className="preference-note">Signed release builds check about every six hours and download in the background. Installation happens only when you choose Restart to update.</p>
+        </section>
+        <section className="preference-section">
+          <h2>Account</h2>
+          <div className="preference-group">
+            <div className="preference-row">
+              <div>
+                <strong>Connection unavailable</strong>
+                <span>The local service must be running to connect or disconnect an account.</span>
+              </div>
+            </div>
+            <p className="preference-note">No local Trace is uploaded or shared by connecting an account.</p>
+          </div>
+        </section>
+        <section className="preference-section">
+          <h2>Security</h2>
+          <div className="preference-group">
+            <div className="preference-row">
+              <div>
+                <strong>Local data · {vault.label}</strong>
+                <span>{vault.detail}</span>
+              </div>
+            </div>
+            <div className="preference-row">
+              <div>
+                <strong>Notaries</strong>
+                <span>Notary details are available after the local service starts.</span>
+              </div>
+            </div>
+            <p className="preference-note">Changing protection requires a guided migration of existing private Traces.</p>
+          </div>
+        </section>
+        <section className="preference-section">
+          <h2>Updates</h2>
+          <div className="preference-group">
+            <div className="preference-row">
+              <div>
+                <strong>Notary {state.app_version}</strong>
+                <span>{updateState?.message ?? 'Signed release updates are unavailable in this build.'}</span>
+              </div>
+              {updateState?.phase === 'ready' ? (
+                <button
+                  className="mac-button is-primary"
+                  disabled={Boolean(restartBlock) || updateBusy}
+                  onClick={onRestartToUpdate}
+                >
+                  Restart to update
+                </button>
+              ) : (
+                <button
+                  className="mac-button"
+                  disabled={!updateState?.enabled || updateBusy}
+                  onClick={onCheckUpdate}
+                >
+                  Check now
+                </button>
+              )}
+            </div>
+            {restartBlock && <p className="preference-note update-block-note">{restartBlock}</p>}
+            <p className="preference-note">Updates are signature-checked for ai.exalto.notary before installation.</p>
+          </div>
+        </section>
+        <section className="preference-section">
+          <h2>Advanced</h2>
+          <div className="preference-group compact-rows">
+            <div className="preference-row"><strong>Service · Provider proxy</strong><code>{state.proxy_listener}</code></div>
+            <div className="preference-row"><strong>Service · Administration</strong><code>{state.admin_listener}</code></div>
+            <div className="preference-row"><strong>Service build</strong><code>Not running</code></div>
+            <div className="preference-row"><strong>Developer · App build</strong><code>{state.app_build_id}</code></div>
+          </div>
+        </section>
+        {(notice || message) && <div className="native-notice">{message ?? notice}</div>}
       </div>
-    </section>
-    <section className="preference-section">
-      <h2>Private trace protection</h2>
-      <div className="preference-group">
-        <div className="preference-row"><div><strong>{vault.label}</strong><span>{vault.detail}</span></div><span className="value-label">Configured</span></div>
-        <p className="preference-note">Changing protection requires a guided migration so existing private traces are never left with two sources of truth.</p>
-      </div>
-    </section>
-    <section className="preference-section">
-      <h2>Local service</h2>
-      <div className="preference-group compact-rows">
-        <div className="preference-row"><strong>Provider proxy</strong><code>{state.proxy_listener}</code></div>
-        <div className="preference-row"><strong>Administration</strong><code>{state.admin_listener}</code></div>
-        <div className="preference-row"><strong>Version</strong><code>{state.version ?? 'Not running'}</code></div>
-        <div className="preference-row"><strong>App build</strong><code>{state.app_build_id}</code></div>
-        <div className="preference-row"><strong>Service build</strong><code>{state.daemon_build_id ?? 'Not running'}</code></div>
-      </div>
-    </section>
-    <section className="preference-section service-backed-settings">
-      <h2>Service settings</h2>
-      <p className="preference-note">Account, capture, notary trust, storage, listeners, and developer settings come from the local service.</p>
-      <WorkspaceFrame route="settings" running={state.running} />
-    </section>
-    {(notice || message) && <div className="native-notice">{message ?? notice}</div>}
-  </div>;
+    );
+  }
+
+  return (
+    <div className="native-page embedded-settings-page">
+      <WorkspaceFrame
+        route="settings"
+        running={state.running}
+        desktopSettings={desktopSettings}
+        onDesktopSettingsAction={handleDesktopAction}
+      />
+    </div>
+  );
 }

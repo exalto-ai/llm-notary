@@ -67,11 +67,13 @@ provider mapping, and canonical trace agree.
 
 ## Activity
 
-Activity asks the daemon to filter by severity, Trace identifier, operation
-identifier, event type, or time. It does not download a broad history for
-client-side filtering. Messages are bounded and may include safe identifiers
-and failure codes; they never include request bodies, response bodies, raw
-headers, credential values, or capture paths.
+Activity keeps severity, date, and Trace ID visible and moves operation ID and
+raw event name under **More filters**. Each filter is sent to the daemon; the
+browser does not download a broad history for client-side filtering.
+Trace-linked events open their Trace, while service-only events remain
+inspectable. Messages and optional failure codes are bounded; they never
+include request bodies, response bodies, raw headers, credential values, or
+capture paths.
 
 ## Providers
 
