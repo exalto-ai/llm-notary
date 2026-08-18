@@ -89,7 +89,7 @@ pub(super) fn validate_account_link(value: &str) -> Result<Url, String> {
     });
     let allowed_route = matches!(
         route,
-        "/dashboard" | "/dashboard/credits" | "/pricing" | "/dashboard/settings"
+        "/account" | "/account/traces" | "/account/usage" | "/pricing" | "/account/settings"
     ) || authorization_query;
     if (!secure && !loopback_http)
         || url.host_str().is_none()

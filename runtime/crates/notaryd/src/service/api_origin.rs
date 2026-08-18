@@ -120,8 +120,8 @@ mod tests {
             "https://example.test/api/device-session"
         );
         assert_eq!(
-            secure.web_url("/dashboard/credits").as_str(),
-            "https://example.test/#/dashboard/credits"
+            secure.web_url("/account/usage").as_str(),
+            "https://example.test/#/account/usage"
         );
         assert_eq!(
             ApiOrigin::parse("http://[::1]:8787").unwrap().to_string(),

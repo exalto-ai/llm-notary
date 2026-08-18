@@ -668,7 +668,7 @@ pub(super) fn checkout_return_urls(
             .append_pair("checkout", outcome)
             .append_pair("purchase_id", purchase_id)
             .finish();
-        url.set_fragment(Some(&format!("/dashboard/credits?{query}")));
+        url.set_fragment(Some(&format!("/account/usage?{query}")));
         Ok(url)
     };
     let success = build("success")?;
@@ -681,7 +681,7 @@ pub(super) fn subscription_return_urls(public_origin: &Url) -> ApiResult<(Url, U
         let mut url = public_origin
             .join("/")
             .map_err(|error| ApiError::internal(error.into()))?;
-        url.set_fragment(Some(&format!("/dashboard/credits?subscription={outcome}")));
+        url.set_fragment(Some(&format!("/account/usage?subscription={outcome}")));
         Ok(url)
     };
     Ok((build("success")?, build("cancelled")?))

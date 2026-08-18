@@ -60,6 +60,11 @@ impl BrowserAuthProvider {
     }
 }
 
+fn allowed_return_to(value: String) -> Option<String> {
+    (value.starts_with("#/authorize?") || value == "#/account" || value.starts_with("#/account/"))
+        .then_some(value)
+}
+
 #[derive(Serialize, ToSchema)]
 pub(super) struct AuthProvidersResponse {
     github: bool,
@@ -121,9 +126,7 @@ pub(super) async fn start_github_login(
         .execute(&state.database)
         .await
         .map_err(database_error)?;
-    let return_to = query
-        .return_to
-        .filter(|value| value.starts_with("#/authorize?"));
+    let return_to = query.return_to.and_then(allowed_return_to);
     sqlx::query(
         "INSERT INTO browser_oauth_states (state_hash, expires_at, return_to, provider)
          VALUES ($1, $2, $3, 'github')",
@@ -268,9 +271,7 @@ pub(super) async fn start_google_login(
         .execute(&state.database)
         .await
         .map_err(database_error)?;
-    let return_to = query
-        .return_to
-        .filter(|value| value.starts_with("#/authorize?"));
+    let return_to = query.return_to.and_then(allowed_return_to);
     sqlx::query(
         "INSERT INTO browser_oauth_states (state_hash, expires_at, return_to, provider)
          VALUES ($1, $2, $3, 'google')",
@@ -696,4 +697,23 @@ pub(super) async fn issue_web_session(
     .await
     .map_err(database_error)?;
     Ok(session_token)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::allowed_return_to;
+
+    #[test]
+    fn browser_auth_returns_only_to_bounded_in_app_routes() {
+        for route in [
+            "#/authorize?request_id=request-1",
+            "#/account",
+            "#/account/traces",
+        ] {
+            assert_eq!(allowed_return_to(route.to_owned()).as_deref(), Some(route));
+        }
+        for route in ["https://attacker.example", "//attacker.example", "#/traces"] {
+            assert!(allowed_return_to(route.to_owned()).is_none());
+        }
+    }
 }

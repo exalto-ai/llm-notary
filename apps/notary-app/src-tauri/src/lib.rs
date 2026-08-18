@@ -318,7 +318,8 @@ mod tests {
             )
             .is_ok()
         );
-        assert!(validate_account_link("https://notary.example/#/dashboard/credits").is_ok());
+        assert!(validate_account_link("https://notary.example/#/account/usage").is_ok());
+        assert!(validate_account_link("https://notary.example/#/account/traces").is_ok());
         assert!(
             validate_account_link("https://notary.example/#/authorize?request_id=abc").is_err()
         );
@@ -326,6 +327,6 @@ mod tests {
             validate_account_link("https://notary.example/#/authorize?request_id=abc&evil=xyz")
                 .is_err()
         );
-        assert!(validate_account_link("http://example.com/#/dashboard").is_err());
+        assert!(validate_account_link("http://example.com/#/account").is_err());
     }
 }

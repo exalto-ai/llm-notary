@@ -236,10 +236,20 @@ describe('hosted site', () => {
 
   test('defaults to light and keeps appearance choices out of the signed-in account menu', async () => {
     expect(initialThemePreference()).toBe('light');
-    render(<Header user={{ provider_display_name: 'fixture-user' }} onLogout={() => {}} />);
+    let signedOut = false;
+    render(
+      <Header
+        user={{ provider_display_name: 'fixture-user' }}
+        onLogout={() => {
+          signedOut = true;
+        }}
+      />,
+    );
 
     await page.getByRole('button', { name: 'Account menu for fixture-user' }).click();
-    await expect.element(page.getByRole('link', { name: 'Dashboard' })).toBeVisible();
+    await expect.element(page.getByRole('link', { name: 'Account' })).toBeVisible();
+    await page.getByRole('button', { name: 'Sign out' }).click();
+    expect(signedOut).toBe(true);
     await expect.element(page.getByRole('group', { name: 'Appearance' })).not.toBeInTheDocument();
   });
 
@@ -252,8 +262,8 @@ describe('hosted site', () => {
     await expect.element(page.getByRole('link', { name: 'Sign in' })).not.toBeInTheDocument();
   });
 
-  test('keeps a dashboard deep link out of the landing page while authentication loads', async () => {
-    window.location.hash = '#/dashboard/settings';
+  test('keeps an Account deep link out of the landing page while authentication loads', async () => {
+    window.location.hash = '#/account/settings';
     let resolveCurrentUser;
     const loadCurrentUser = () =>
       new Promise((resolve) => {
@@ -261,8 +271,8 @@ describe('hosted site', () => {
       });
     render(<App loadCurrentUser={loadCurrentUser} />);
 
-    await expect.element(page.getByRole('status', { name: 'Loading dashboard' })).toBeVisible();
-    await expect.element(page.getByText('Loading dashboard…')).toBeVisible();
+    await expect.element(page.getByRole('status', { name: 'Loading Account' })).toBeVisible();
+    await expect.element(page.getByText('Loading Account…')).toBeVisible();
     await expect
       .element(page.getByRole('heading', { name: 'Loading your account' }))
       .not.toBeInTheDocument();
@@ -277,6 +287,7 @@ describe('hosted site', () => {
     await expect
       .element(page.getByRole('heading', { name: 'Settings', exact: true }))
       .toBeVisible();
+    expect(document.title).toBe('Settings · Notary by Exalto');
   });
 
   test('offers Google first and preserves a local-service return route', async () => {
@@ -302,6 +313,39 @@ describe('hosted site', () => {
     expect(document.querySelector('.auth-provider')?.textContent).toContain('Google');
     await expect.element(page.getByText('Google access')).not.toBeInTheDocument();
     await expect.element(page.getByText('Provider tokens')).not.toBeInTheDocument();
+  });
+
+  test('uses the formal sign-in title and preserves legacy Dashboard deep links', async () => {
+    window.location.hash = '#/signin';
+    render(<App loadCurrentUser={async () => null} />);
+    await expect.element(page.getByRole('heading', { name: 'Sign in' })).toBeVisible();
+    expect(document.title).toBe('Sign in · Notary by Exalto');
+
+    cleanup();
+    window.location.hash = '#/dashboard/settings';
+    render(
+      <App
+        loadCurrentUser={async () => ({
+          provider_display_name: 'fixture-user',
+          usage: usageFixture(),
+        })}
+      />,
+    );
+    await expect
+      .element(page.getByRole('heading', { name: 'Settings', exact: true }))
+      .toBeVisible();
+  });
+
+  test('returns signed-out Account visitors to the requested Account route', async () => {
+    render(
+      <SignInPage
+        route="signin?return_to=%23%2Faccount%2Ftraces"
+        loadProviders={async () => ({ google: true, github: true })}
+      />,
+    );
+    await expect
+      .element(page.getByRole('link', { name: 'Continue with Google' }))
+      .toHaveAttribute('href', '/api/auth/google?return_to=%23%2Faccount%2Ftraces');
   });
 
   test('shows only the configured sign-in provider', async () => {
@@ -331,7 +375,40 @@ describe('hosted site', () => {
     expect(document.querySelectorAll('.auth-provider-progress i')).toHaveLength(3);
   });
 
-  test('offers Auto, Light, and Dark in Dashboard account settings', async () => {
+  test('covers sign-in loading, unavailable, and already-signed-in states', async () => {
+    render(<SignInPage loadProviders={() => new Promise(() => {})} />);
+    await expect
+      .element(page.getByRole('status').getByText('Loading sign-in options'))
+      .toBeVisible();
+    await expect.element(page.getByText('Continue to Notary', { exact: true })).toBeVisible();
+
+    cleanup();
+    render(
+      <SignInPage
+        loadProviders={async () => {
+          throw new Error('Identity providers are offline.');
+        }}
+      />,
+    );
+    await expect
+      .element(page.getByRole('alert').getByText('Sign-in options are unavailable'))
+      .toBeVisible();
+    await expect.element(page.getByText('Identity providers are offline.')).toBeVisible();
+
+    cleanup();
+    render(
+      <SignInPage
+        user={{ provider_display_name: 'fixture-user' }}
+        loadProviders={async () => ({ google: true, github: true })}
+      />,
+    );
+    await expect.element(page.getByRole('heading', { name: 'Already signed in' })).toBeVisible();
+    await expect
+      .element(page.getByRole('link', { name: 'Open Account' }))
+      .toHaveAttribute('href', '/#/account');
+  });
+
+  test('offers Auto, Light, and Dark in Account appearance settings', async () => {
     let selectedTheme;
     render(
       <AccountSettings
@@ -342,7 +419,7 @@ describe('hosted site', () => {
       />,
     );
 
-    await expect.element(page.getByRole('heading', { name: 'Account settings' })).toBeVisible();
+    await expect.element(page.getByRole('heading', { name: 'Appearance' })).toBeVisible();
     const appearance = page.getByRole('radiogroup', { name: 'Appearance' });
     await expect
       .element(appearance.getByRole('radio', { name: 'light' }))
@@ -352,7 +429,7 @@ describe('hosted site', () => {
     await expect.element(appearance.getByRole('radio', { name: 'dark' })).toBeVisible();
   });
 
-  test('collapses Dashboard navigation into a mobile dropdown', async () => {
+  test('collapses Account navigation into a mobile dropdown', async () => {
     await page.viewport(390, 844);
     render(
       <Dashboard
@@ -360,7 +437,7 @@ describe('hosted site', () => {
           provider_display_name: 'fixture-user',
           usage: usageFixture({ credits: null, total: 3, shared: 2, verifying: 1 }),
         }}
-        view="credits"
+        view="usage"
         theme="light"
         onThemeChange={() => {}}
         onAccountDeleted={() => {}}
@@ -372,8 +449,8 @@ describe('hosted site', () => {
       />,
     );
 
-    const navigation = page.getByRole('navigation', { name: 'Dashboard navigation' });
-    const trigger = navigation.getByRole('button', { name: 'Dashboard menu: Plan & usage' });
+    const navigation = page.getByRole('navigation', { name: 'Account navigation' });
+    const trigger = navigation.getByRole('button', { name: 'Account menu: Plan & usage' });
     await expect.element(trigger).toHaveAttribute('aria-expanded', 'false');
     await trigger.click();
     await expect.element(trigger).toHaveAttribute('aria-expanded', 'true');
@@ -385,13 +462,43 @@ describe('hosted site', () => {
     await expect.element(trigger).toHaveAttribute('aria-expanded', 'false');
   });
 
-  test('shows completed captures and notarizations in the account overview', async () => {
+  test('uses only the canonical Account routes in desktop navigation', async () => {
+    render(
+      <Dashboard
+        user={{
+          provider_display_name: 'fixture-user',
+          usage: usageFixture({ total: 3, shared: 2, verifying: 1 }),
+        }}
+        view="traces"
+        theme="light"
+        onThemeChange={() => {}}
+        onAccountDeleted={() => {}}
+        loadConnectedDevices={async () => ({ items: [], next_cursor: null })}
+        loadHostedTraces={async () => ({ items: [], next_cursor: null })}
+        loadCreditOffers={async () => []}
+        loadCreditHistory={async () => ({ items: [], next_cursor: null })}
+        loadBillingPurchases={async () => []}
+      />,
+    );
+
+    const accountRoutes = Array.from(document.querySelectorAll('.dashboard-sidebar a')).map(
+      (link) => [link.textContent?.trim(), link.getAttribute('href')],
+    );
+    expect(accountRoutes).toEqual([
+      ['Overview', '#/account'],
+      ['Traces3', '#/account/traces'],
+      ['Plan & usage', '#/account/usage'],
+      ['Settings', '#/account/settings'],
+    ]);
+    expect(document.querySelector('a[href^="#/dashboard"]')).toBeNull();
+  });
+
+  test('summarizes plan, usage, shared traces, and attention in the Account overview', async () => {
     render(
       <Dashboard
         user={{
           provider_display_name: 'fixture-user',
           usage: usageFixture({
-            credits: null,
             captures: 12,
             notarizations: 7,
             total: 3,
@@ -411,9 +518,15 @@ describe('hosted site', () => {
       />,
     );
 
+    await expect.element(page.getByText('None', { exact: true })).toBeVisible();
     const summary = document.querySelector('.dashboard-summary');
-    expect(summary?.textContent).toContain('Completed captures12');
-    expect(summary?.textContent).toContain('Completed notarizations7');
+    expect(summary?.textContent).toContain('Current planFree · active');
+    expect(summary?.textContent).toContain('Capture usage0 B used');
+    expect(summary?.textContent).toContain('Notarization usage0 B used');
+    expect(summary?.textContent).toContain('Shared traces2');
+    expect(summary?.textContent).toContain('Needs attentionNone');
+    expect(summary?.textContent).not.toContain('Completed captures');
+    expect(summary?.textContent).not.toContain('Completed notarizations');
   });
 
   test('discards an old credit-history page after claiming an offer', async () => {
@@ -456,7 +569,7 @@ describe('hosted site', () => {
           billing: billingFixture(),
           usage: usageFixture(),
         }}
-        view="credits"
+        view="usage"
         theme="light"
         onThemeChange={() => {}}
         onAccountDeleted={() => {}}
@@ -503,7 +616,7 @@ describe('hosted site', () => {
           billing: billingFixture({ purchase_mode: 'live' }),
           usage: usageFixture(),
         }}
-        view="credits"
+        view="usage"
         theme="light"
         onThemeChange={() => {}}
         onAccountDeleted={() => {}}
@@ -533,7 +646,7 @@ describe('hosted site', () => {
     let checkoutRequest;
     let openedUrl;
     const common = {
-      view: 'credits',
+      view: 'usage',
       theme: 'light',
       onThemeChange: () => {},
       onAccountDeleted: () => {},
@@ -590,7 +703,7 @@ describe('hosted site', () => {
   test('hides Checkout when disabled and labels Stripe test mode unmistakably', async () => {
     const credits = creditsFixture();
     const common = {
-      view: 'credits',
+      view: 'usage',
       theme: 'light',
       onThemeChange: () => {},
       onAccountDeleted: () => {},
@@ -659,8 +772,8 @@ describe('hosted site', () => {
           billing: billingFixture({ purchase_mode: 'test' }),
           usage: usageFixture({ credits }),
         }}
-        view="credits"
-        route="credits?checkout=success&purchase_id=purchase-1"
+        view="usage"
+        route="usage?checkout=success&purchase_id=purchase-1"
         theme="light"
         onThemeChange={() => {}}
         onAccountDeleted={() => {}}
@@ -706,8 +819,8 @@ describe('hosted site', () => {
           billing: billingFixture({ purchase_mode: 'test' }),
           usage: usageFixture({ credits }),
         }}
-        view="credits"
-        route="credits?checkout=success&purchase_id=purchase-1"
+        view="usage"
+        route="usage?checkout=success&purchase_id=purchase-1"
         theme="light"
         onThemeChange={() => {}}
         onAccountDeleted={() => {}}
@@ -753,8 +866,8 @@ describe('hosted site', () => {
           billing: billingFixture({ purchase_mode: 'test' }),
           usage: usageFixture({ credits }),
         }}
-        view="credits"
-        route="credits?checkout=success&purchase_id=purchase-1"
+        view="usage"
+        route="usage?checkout=success&purchase_id=purchase-1"
         theme="light"
         onThemeChange={() => {}}
         onAccountDeleted={() => {}}
@@ -844,7 +957,7 @@ describe('hosted site', () => {
     await expect.element(page.getByRole('link', { name: 'Choose sign-in method' })).toBeVisible();
     await expect.element(page.getByText('Google access')).not.toBeInTheDocument();
     await expect.element(page.getByText('Provider tokens')).not.toBeInTheDocument();
-    await expect.element(page.getByText('Review and approve the device')).toBeVisible();
+    await expect.element(page.getByText('Review and connect the device')).toBeVisible();
     await expect.element(page.getByRole('link', { name: 'Sign in' })).not.toBeInTheDocument();
   });
 
@@ -853,6 +966,7 @@ describe('hosted site', () => {
       device_name: 'Research MacBook',
       user_code: 'NOTARY-7K3',
       expires_at: 1_786_000_000,
+      capabilities: ['hosted_notarization', 'consume_credits', 'share_notarized_traces'],
     });
     let approved;
     render(
@@ -866,18 +980,105 @@ describe('hosted site', () => {
       />,
     );
 
-    await expect
-      .element(page.getByRole('heading', { name: 'Approve this local service?' }))
-      .toBeVisible();
+    await expect.element(page.getByRole('heading', { name: 'Connect this device?' })).toBeVisible();
     await expect.element(page.getByText('Research MacBook')).toBeVisible();
     await expect.element(page.getByText('fixture-user')).toBeVisible();
     await expect.element(page.getByText('NOTARY-7K3')).toBeVisible();
-    await page.getByRole('button', { name: 'Approve service' }).click();
+    await expect.element(page.getByText('Use hosted notarization')).toBeVisible();
+    await expect.element(page.getByText('Consume account credits')).toBeVisible();
+    await expect.element(page.getByText('Share Notarized traces')).toBeVisible();
+    await expect
+      .element(page.getByText(/Connecting does not upload existing local traces/))
+      .toBeVisible();
+    expect(document.body.textContent).not.toContain('secret-456');
+    await page.getByRole('button', { name: 'Connect device' }).click();
 
     expect(approved).toEqual(['request-123', 'secret-456']);
+    await expect.element(page.getByRole('heading', { name: 'Device connected' })).toBeVisible();
+  });
+
+  test('covers checking, invalid, and unavailable device-connection states', async () => {
+    render(
+      <DeviceAuthorizationApproval
+        route="authorize?request_id=request-123&approval_secret=secret-456"
+        user={{ provider_display_name: 'fixture-user' }}
+        loadApproval={() => new Promise(() => {})}
+      />,
+    );
     await expect
-      .element(page.getByRole('heading', { name: 'Local service approved' }))
+      .element(page.getByRole('heading', { name: 'Checking this request' }))
       .toBeVisible();
+    await expect.element(page.getByText('None until you approve')).toBeVisible();
+
+    cleanup();
+    render(
+      <DeviceAuthorizationApproval
+        route="authorize"
+        user={{ provider_display_name: 'fixture-user' }}
+      />,
+    );
+    await expect
+      .element(page.getByRole('heading', { name: 'Invalid authorization link' }))
+      .toBeVisible();
+    await expect.element(page.getByText('Restart from the local Notary app')).toBeVisible();
+
+    cleanup();
+    render(
+      <DeviceAuthorizationApproval
+        route="authorize?request_id=request-123&approval_secret=secret-456"
+        user={{ provider_display_name: 'fixture-user' }}
+        loadApproval={async () => {
+          throw new Error('This request expired.');
+        }}
+      />,
+    );
+    await expect
+      .element(page.getByRole('heading', { name: 'Connection unavailable' }))
+      .toBeVisible();
+    await expect.element(page.getByRole('alert').getByText(/This request expired/)).toBeVisible();
+  });
+
+  test('groups Account settings and revokes a connected device', async () => {
+    let revokedId;
+    render(
+      <Dashboard
+        user={{ provider_display_name: 'fixture-user', usage: usageFixture({ credits: null }) }}
+        view="settings"
+        theme="light"
+        onThemeChange={() => {}}
+        onAccountDeleted={() => {}}
+        loadConnectedDevices={async () => ({
+          items: [
+            {
+              device_id: 'device-1',
+              device_name: 'Research MacBook',
+              created_at: 1_786_000_000,
+              last_used_at: 1_786_000_100,
+              expires_at: 1_796_000_000,
+              revoked_at: null,
+            },
+          ],
+          next_cursor: null,
+        })}
+        revokeDeviceRequest={async (id) => {
+          revokedId = id;
+        }}
+        loadHostedTraces={async () => ({ items: [], next_cursor: null })}
+        loadCreditOffers={async () => []}
+        loadCreditHistory={async () => ({ items: [], next_cursor: null })}
+        loadBillingPurchases={async () => []}
+      />,
+    );
+
+    await expect.element(page.getByRole('heading', { name: 'Appearance' })).toBeVisible();
+    await expect.element(page.getByRole('heading', { name: 'API access' })).toBeVisible();
+    await expect.element(page.getByRole('heading', { name: 'Connected devices' })).toBeVisible();
+    await expect.element(page.getByRole('heading', { name: 'Delete account' })).toBeVisible();
+    await expect.element(page.getByText('Research MacBook')).toBeVisible();
+    await page.getByRole('button', { name: 'Revoke' }).click();
+    await page.getByRole('alertdialog').getByRole('button', { name: 'Revoke device' }).click();
+    expect(revokedId).toBe('device-1');
+    await expect.element(page.getByText('No devices are connected.')).toBeVisible();
   });
 
   test('shows a new API key once and revokes it from the account list', async () => {
@@ -1182,6 +1383,9 @@ describe('hosted site', () => {
       />,
     );
 
+    await expect
+      .element(page.getByText(/Local traces and local settings on your devices are not deleted/))
+      .toBeVisible();
     await page.getByRole('button', { name: 'Delete account' }).click();
     const dialog = page.getByRole('alertdialog');
     const submit = dialog.getByRole('button', { name: 'Delete account' });
@@ -1439,7 +1643,13 @@ describe('hosted site', () => {
       />,
     );
 
-    await page.getByRole('button', { name: 'Manage' }).click();
+    await expect
+      .element(page.getByText('Notarized traces you’ve shared through Notary.'))
+      .toBeVisible();
+    await expect.element(page.getByRole('link', { name: 'Open' })).toBeVisible();
+    await expect.element(page.getByRole('button', { name: 'Copy link' })).toBeVisible();
+    await expect.element(page.getByRole('link', { name: 'Export .llmtrace' })).toBeVisible();
+    await page.getByRole('button', { name: 'Manage access' }).click();
     const dialogBounds = page.getByRole('dialog').element().getBoundingClientRect();
     const visibilityWidth = page
       .getByRole('combobox', { name: 'Library visibility' })
@@ -1471,6 +1681,57 @@ describe('hosted site', () => {
     await page.getByRole('alertdialog').getByRole('button', { name: 'Stop sharing' }).click();
     expect(stopped).toBe(true);
     await expect.element(page.getByText('Stopped', { exact: true })).toBeVisible();
+  });
+
+  test('renders every canonical hosted Trace status', async () => {
+    const trace = (status, index) => ({
+      trace_id: `trace-${status}`,
+      source_trace_id: `local-${status}`,
+      status,
+      access: { visibility: 'unlisted', password_protected: false, expires_at: null },
+      allow_high_entropy: false,
+      created_at: 1_786_000_000 + index,
+      updated_at: 1_786_000_000 + index,
+      verification: {
+        verified_at: null,
+        failure_code: status === 'failed' ? 'worker_failed' : null,
+      },
+      package: {
+        format: 'notary/trace-package/v1',
+        declared_size_bytes: 4096,
+        declared_sha256: `${index}`.repeat(64),
+        admitted_size_bytes: null,
+        admitted_sha256: null,
+      },
+      status_url: `/api/traces/trace-${status}`,
+      public_url: status === 'shared' ? `https://example.test/s/trace-${status}` : null,
+      package_url: status === 'shared' ? `/api/traces/trace-${status}/package.llmtrace` : null,
+    });
+    const statuses = ['verifying', 'shared', 'stopped', 'rejected', 'failed'];
+    render(
+      <Dashboard
+        user={{
+          provider_display_name: 'fixture-user',
+          usage: usageFixture({ credits: null, total: statuses.length, shared: 2, verifying: 1 }),
+        }}
+        view="traces"
+        theme="light"
+        onThemeChange={() => {}}
+        onAccountDeleted={() => {}}
+        loadConnectedDevices={async () => ({ items: [], next_cursor: null })}
+        loadHostedTraces={async () => ({
+          items: statuses.map(trace),
+          next_cursor: null,
+        })}
+        loadCreditOffers={async () => []}
+        loadCreditHistory={async () => ({ items: [], next_cursor: null })}
+        loadBillingPurchases={async () => []}
+      />,
+    );
+
+    for (const status of ['Verifying', 'Shared', 'Stopped', 'Rejected', 'Failed']) {
+      await expect.element(page.getByText(status, { exact: true })).toBeVisible();
+    }
   });
 
   test('requires disclosure consent before hosted package verification', async () => {

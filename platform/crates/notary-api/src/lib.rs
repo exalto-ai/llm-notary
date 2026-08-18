@@ -1479,8 +1479,10 @@ mod tests {
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0].device_id, own_id);
 
+        let revoked_before = unix_timestamp().unwrap();
         let revoked =
             revoke_web_device_session(State(state.clone()), jar(), Path(own_id.clone())).await;
+        let revoked_after = unix_timestamp().unwrap();
         assert!(matches!(revoked, Ok(StatusCode::NO_CONTENT)));
         let sessions = match list_devices(
             State(state.clone()),
@@ -1494,7 +1496,11 @@ mod tests {
         };
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0].device_id, own_id);
-        assert_eq!(sessions[0].revoked_at, Some(now));
+        assert!(
+            sessions[0].revoked_at.is_some_and(
+                |revoked_at| revoked_at >= revoked_before && revoked_at <= revoked_after
+            )
+        );
 
         let cross_account = revoke_web_device_session(State(state), jar(), Path(other_id)).await;
         assert!(matches!(

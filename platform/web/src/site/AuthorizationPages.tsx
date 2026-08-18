@@ -17,6 +17,7 @@ import { sessionDate } from './format';
 type CurrentUser = NonNullable<Awaited<ReturnType<typeof getCurrentUser>>>;
 type AccountIdentity = Pick<CurrentUser, 'display_name' | 'provider_display_name'>;
 type DeviceAuthorizationDetails = Awaited<ReturnType<typeof getDeviceAuthorizationApproval>>;
+type DeviceCapability = DeviceAuthorizationDetails['capabilities'][number];
 type HostedRegistry = Awaited<ReturnType<typeof getRegistry>>;
 type HostedNotary = HostedRegistry['notaries'][number];
 type AuthorizationTone = 'neutral' | 'attention' | 'success' | 'ready';
@@ -29,6 +30,12 @@ function accountName(user: AccountIdentity) {
 function messageFrom(reason: unknown, fallback: string) {
   return reason instanceof Error ? reason.message : fallback;
 }
+
+const deviceCapabilityLabels: Record<DeviceCapability, string> = {
+  hosted_notarization: 'Use hosted notarization',
+  consume_credits: 'Consume account credits',
+  share_notarized_traces: 'Share Notarized traces',
+};
 
 function AuthorizationPage({
   title,
@@ -47,7 +54,7 @@ function AuthorizationPage({
     <main className={`cli-approval-shell cli-approval-shell--${tone}`}>
       <section className="cli-approval-workspace" aria-labelledby="cli-approval-title">
         <div className="cli-approval-primary">
-          <span className="eyebrow">Local service authorization</span>
+          <span className="eyebrow">Device connection</span>
           <h1 id="cli-approval-title">{title}</h1>
           <div className="cli-approval-description">{description}</div>
           {action && <div className="cli-approval-action">{action}</div>}
@@ -58,11 +65,11 @@ function AuthorizationPage({
             <div
               className="cli-approval-path"
               role="img"
-              aria-label="Local service connects to an Notary account"
+              aria-label="Device connects to a Notary account"
             >
               <span>
                 <i aria-hidden="true" />
-                Local service
+                This device
               </span>
               <b aria-hidden="true" />
               <span>
@@ -123,7 +130,7 @@ export function DeviceAuthorizationApproval({
       await approveRequest(requestId, approvalSecret);
       setApproved(true);
     } catch (reason) {
-      setError(messageFrom(reason, 'Could not approve this local service request.'));
+      setError(messageFrom(reason, 'Could not connect this device.'));
     }
   };
   if (!requestId || !approvalSecret)
@@ -131,10 +138,10 @@ export function DeviceAuthorizationApproval({
       <AuthorizationPage
         tone="attention"
         title="Invalid authorization link"
-        description={<p>Return to the local dashboard and begin authorization again.</p>}
+        description={<p>Restart the connection from the local Notary app.</p>}
         facts={[
           ['Request', 'Invalid or incomplete'],
-          ['Next step', 'Start again in the local dashboard'],
+          ['Next step', 'Restart from the local Notary app'],
         ]}
       />
     );
@@ -144,8 +151,8 @@ export function DeviceAuthorizationApproval({
         title="Sign in to continue"
         description={
           <p>
-            Sign in to the account that should own this local service. You’ll review the device name
-            and approve the connection next.
+            Sign in to the account you want to connect. You’ll review the device and its exact
+            capabilities before anything changes.
           </p>
         }
         action={
@@ -157,7 +164,7 @@ export function DeviceAuthorizationApproval({
           </a>
         }
         facts={[
-          ['Next step', 'Review and approve the device'],
+          ['Next step', 'Review and connect the device'],
           ['Control', 'Revoke later from Account'],
         ]}
       />
@@ -166,17 +173,16 @@ export function DeviceAuthorizationApproval({
     return (
       <AuthorizationPage
         tone="success"
-        title="Local service approved"
+        title="Device connected"
         description={
           <p>
-            Your local dashboard will finish connecting to this account shortly. You can close this
-            page.
+            The local Notary app will finish connecting to this account. You can close this page.
           </p>
         }
         facts={[
-          ['Device', details?.device_name || 'Local service'],
+          ['Device', details?.device_name || 'Local Notary device'],
           ['Account', accountName(user)],
-          ['Status', 'Approved'],
+          ['Status', 'Connected'],
         ]}
       />
     );
@@ -184,12 +190,12 @@ export function DeviceAuthorizationApproval({
     return (
       <AuthorizationPage
         tone="attention"
-        title="Authorization unavailable"
-        description={<p role="alert">{error} Return to the local dashboard and start again.</p>}
+        title="Connection unavailable"
+        description={<p role="alert">{error} Restart the connection from the local Notary app.</p>}
         facts={[
           ['Request', 'Needs attention'],
           ['Account', accountName(user)],
-          ['Next step', 'Start again in the local dashboard'],
+          ['Next step', 'Restart from the local Notary app'],
         ]}
       />
     );
@@ -212,16 +218,26 @@ export function DeviceAuthorizationApproval({
   return (
     <AuthorizationPage
       tone="ready"
-      title="Approve this local service?"
+      title="Connect this device?"
       description={
-        <p>
-          This allows the local dashboard to use hosted notarization and create shares under your
-          account.
-        </p>
+        <div>
+          <p>This device will be able to:</p>
+          <ul>
+            {details.capabilities.map((capability) => (
+              <li key={capability}>
+                {deviceCapabilityLabels[capability] || capability.replaceAll('_', ' ')}
+              </li>
+            ))}
+          </ul>
+          <p>
+            Connecting does not upload existing local traces. Future sharing remains a separate,
+            explicit action, and you can revoke this device later from Account.
+          </p>
+        </div>
       }
       action={
         <button className="button button-dark" type="button" onClick={approve}>
-          Approve service
+          Connect device
         </button>
       }
       facts={[

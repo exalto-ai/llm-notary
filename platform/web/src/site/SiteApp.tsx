@@ -309,8 +309,8 @@ function AccountMenu({ user, onLogout }: { user: AccountIdentity; onLogout: () =
           </div>
           <div className="account-actions">
             {/* biome-ignore lint/a11y/useValidAnchor: This root-relative hash URL is SPA navigation, including from direct-share paths. */}
-            <a href="/#/dashboard" onClick={() => setOpen(false)}>
-              Dashboard
+            <a href="/#/account" onClick={() => setOpen(false)}>
+              Account
             </a>
             <button
               type="button"
@@ -319,7 +319,7 @@ function AccountMenu({ user, onLogout }: { user: AccountIdentity; onLogout: () =
                 onLogout();
               }}
             >
-              Log out
+              Sign out
             </button>
           </div>
         </nav>
@@ -442,7 +442,12 @@ export function SignInPage({
     };
   }, [loadProviders]);
   const requestedReturn = new URLSearchParams(route.split('?')[1] || '').get('return_to');
-  const returnTo = requestedReturn?.startsWith('#/authorize?') ? requestedReturn : null;
+  const returnTo =
+    requestedReturn?.startsWith('#/authorize?') ||
+    requestedReturn === '#/account' ||
+    requestedReturn?.startsWith('#/account/')
+      ? requestedReturn
+      : null;
   const providerHref = (provider: AuthProvider) =>
     `/api/auth/${provider}${returnTo ? `?return_to=${encodeURIComponent(returnTo)}` : ''}`;
   if (user)
@@ -453,8 +458,8 @@ export function SignInPage({
           <p className="auth-intro">
             You’re signed in as <b>{accountName(user)}</b>.
           </p>
-          <a className="button button-dark" href="/#/dashboard">
-            Open dashboard
+          <a className="button button-dark" href="/#/account">
+            Open Account
           </a>
         </section>
       </main>
@@ -463,7 +468,7 @@ export function SignInPage({
     <main className="auth-page">
       <section className="auth-panel" aria-labelledby="sign-in-title">
         <h1 id="sign-in-title">Sign in</h1>
-        <p className="auth-intro">Continue to Notary.</p>
+        <p className="auth-intro">Continue to Notary</p>
         {error ? (
           <div className="auth-state" role="alert">
             <b>Sign-in options are unavailable</b>
@@ -870,13 +875,13 @@ export function DashboardAuthLoading() {
       className="dashboard-auth-loading"
       role="status"
       aria-live="polite"
-      aria-label="Loading dashboard"
+      aria-label="Loading Account"
     >
       <div className="dashboard-auth-loading-card">
         <span className="dashboard-auth-loading-indicator" aria-hidden="true">
           <i />
         </span>
-        <span>Loading dashboard…</span>
+        <span>Loading Account…</span>
       </div>
     </main>
   );
@@ -951,7 +956,7 @@ export function App({
   const logout = async () => {
     await logoutBrowser();
     setUser(null);
-    if (window.location.hash === '#/dashboard') window.location.hash = '#/';
+    if (window.location.hash === '#/account') window.location.hash = '#/';
   };
   const accountDeleted = () => {
     setUser(null);
@@ -962,14 +967,19 @@ export function App({
   const directShare = window.location.pathname.match(/^\/s\/([^/]+)\/?$/);
   const directTraceId = directShare ? decodeURIComponent(directShare[1]) : null;
   const routePath = path.split('?')[0];
-  const [section, page] = routePath.split('/');
+  const [requestedSection, requestedPage] = routePath.split('/');
+  const section = requestedSection === 'dashboard' ? 'account' : requestedSection;
+  const page =
+    requestedSection === 'dashboard' && requestedPage === 'credits' ? 'usage' : requestedPage;
+  const routeQuery = path.includes('?') ? `?${path.split('?').slice(1).join('?')}` : '';
+  const canonicalPath = `${section}${page ? `/${page}` : ''}${routeQuery}`;
   const sectionAnchor = new URLSearchParams(path.split('?')[1] || '').get('section');
   const isLibrary = section === 'library' || section === 'traces' || section === 'collections';
-  const dashboardLoading = section === 'dashboard' && authPending;
+  const accountLoading = section === 'account' && authPending;
   useEffect(() => {
     const titles: Record<string, string> = {
       authorize: 'Connect device',
-      dashboard: 'Account',
+      account: 'Account',
       docs: 'Docs',
       library: 'Library',
       collections: 'Library',
@@ -981,12 +991,21 @@ export function App({
       traces: 'Library',
       verify: 'Verify',
     };
+    const accountTitle =
+      page === 'traces'
+        ? 'Traces'
+        : page === 'usage'
+          ? 'Plan & usage'
+          : page === 'settings'
+            ? 'Settings'
+            : 'Account';
+    const sectionTitle = section === 'account' ? accountTitle : titles[section];
     document.title = directTraceId
       ? 'Shared trace · Notary by Exalto'
-      : section
-        ? `${titles[section] ?? 'Notary'} · Notary by Exalto`
+      : sectionTitle
+        ? `${sectionTitle} · Notary by Exalto`
         : 'Notary by Exalto';
-  }, [directTraceId, section]);
+  }, [directTraceId, page, section]);
   return (
     <>
       <Header
@@ -1009,9 +1028,9 @@ export function App({
         <Library />
       ) : section === 'notaries' ? (
         <NotariesPage />
-      ) : dashboardLoading ? (
+      ) : accountLoading ? (
         <DashboardAuthLoading />
-      ) : section === 'dashboard' && user ? (
+      ) : section === 'account' && user ? (
         <Dashboard
           user={user}
           view={page}
@@ -1020,12 +1039,17 @@ export function App({
           onThemeChange={setTheme}
           onAccountDeleted={accountDeleted}
         />
+      ) : section === 'account' ? (
+        <SignInPage
+          route={`signin?return_to=${encodeURIComponent(`#/${canonicalPath}`)}`}
+          user={null}
+        />
       ) : isLegalPage(section) ? (
         <LegalPage pageKey={section} />
       ) : (
         <Landing />
       )}
-      {!isLibrary && !dashboardLoading && <Footer />}
+      {!isLibrary && !accountLoading && <Footer />}
     </>
   );
 }

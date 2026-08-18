@@ -70,7 +70,7 @@ type AccountCreditHistoryEntry = CreditHistoryPage['items'][number];
 type CreditOffer = Awaited<ReturnType<typeof getCreditOffers>>[number];
 type BillingPurchase = Awaited<ReturnType<typeof getBillingPurchase>>;
 type ServicePlan = CurrentUser['billing']['plan'];
-type DashboardView = 'overview' | 'traces' | 'credits' | 'settings';
+type DashboardView = 'overview' | 'traces' | 'usage' | 'settings';
 type DashboardBilling = Omit<CurrentUser['billing'], 'entitlements'> & {
   entitlements?: CurrentUser['billing']['entitlements'];
 };
@@ -90,10 +90,6 @@ function errorMessage(reason: unknown, fallback = 'Something went wrong.'): stri
 
 function accountIdentifier(user: CurrentUser): string {
   return user.provider_display_name;
-}
-
-function authProviderName(user: CurrentUser): string {
-  return user.auth_provider === 'google' ? 'Google' : 'GitHub';
 }
 
 function decimalSize(bytes: number): string {
@@ -252,8 +248,8 @@ export function ApiKeysPanel({
     <section className="dashboard-api-keys" aria-labelledby="api-keys-title">
       <header>
         <div>
-          <span className="eyebrow">Automation access</span>
-          <h2 id="api-keys-title">API keys</h2>
+          <span className="eyebrow">API keys</span>
+          <h2 id="api-keys-title">API access</h2>
         </div>
         <button type="button" onClick={() => setDialogOpen(true)}>
           Create API key
@@ -436,12 +432,12 @@ export function AccountSettings({ theme, onThemeChange }: AccountSettingsProps) 
   return (
     <section className="dashboard-account-settings" aria-labelledby="account-settings-title">
       <header>
-        <span className="eyebrow">Preferences</span>
-        <h2 id="account-settings-title">Account settings</h2>
+        <span className="eyebrow">Theme</span>
+        <h2 id="account-settings-title">Appearance</h2>
       </header>
       <div className="dashboard-account-setting">
         <div>
-          <b>Appearance</b>
+          <b>Browser theme</b>
           <span>Use your device setting, or choose a theme for this browser.</span>
         </div>
         <div className="dashboard-appearance-options" role="radiogroup" aria-label="Appearance">
@@ -503,7 +499,11 @@ export function DeleteAccountPanel({
       <div>
         <span className="eyebrow">Account deletion</span>
         <h2 id="delete-account-title">Delete account</h2>
-        <p>Delete this account and its API keys, devices, credits, traces, and packages.</p>
+        <p>
+          Delete hosted traces, active share access, API keys, devices, billing and account data,
+          and hosted settings according to the retention policy. Local traces and local settings on
+          your devices are not deleted.
+        </p>
       </div>
       <button type="button" onClick={() => setOpen(true)}>
         Delete account
@@ -513,8 +513,9 @@ export function DeleteAccountPanel({
           <AlertDialogHeader>
             <AlertDialogTitle>Delete {identifier}?</AlertDialogTitle>
             <AlertDialogDescription>
-              This deletes the account, API keys, devices, trace links, and packages. You cannot
-              undo it.
+              This deletes hosted traces, active share access, API keys, devices, billing and
+              account data, and hosted settings according to the retention policy. Local traces and
+              local settings on your devices are not deleted. You cannot undo it.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <form id="delete-account-form" className="delete-account-form" onSubmit={remove}>
@@ -596,10 +597,10 @@ function planLabel(plan: ServicePlan): string {
 }
 
 const dashboardSections = [
-  { key: 'overview', label: 'Overview', href: '#/dashboard' },
-  { key: 'traces', label: 'Traces', href: '#/dashboard/traces' },
-  { key: 'credits', label: 'Plan & usage', href: '#/dashboard/credits' },
-  { key: 'settings', label: 'Settings', href: '#/dashboard/settings' },
+  { key: 'overview', label: 'Overview', href: '#/account' },
+  { key: 'traces', label: 'Traces', href: '#/account/traces' },
+  { key: 'usage', label: 'Plan & usage', href: '#/account/usage' },
+  { key: 'settings', label: 'Settings', href: '#/account/settings' },
 ] as const;
 
 const checkoutReturnMessages = {
@@ -649,17 +650,17 @@ function DashboardMobileNavigation({ activeView, traceCount }: DashboardMobileNa
     };
   }, []);
   return (
-    <nav className="dashboard-mobile-toolbar" aria-label="Dashboard navigation" ref={navigationRef}>
+    <nav className="dashboard-mobile-toolbar" aria-label="Account navigation" ref={navigationRef}>
       <button
         type="button"
         className={open ? 'active' : ''}
         onClick={() => setOpen((current) => !current)}
-        aria-label={`Dashboard menu: ${currentLabel}`}
+        aria-label={`Account menu: ${currentLabel}`}
         aria-expanded={open}
         aria-controls="dashboard-mobile-panel"
       >
         <span>
-          <small>Dashboard</small>
+          <small>Account</small>
           {currentLabel}
         </span>
         <ChevronDown aria-hidden="true" />
@@ -861,6 +862,7 @@ interface DashboardProps {
   onThemeChange: (theme: ThemePreference) => void;
   onAccountDeleted: () => void;
   loadConnectedDevices?: typeof getDevices;
+  revokeDeviceRequest?: typeof revokeDevice;
   loadHostedTraces?: typeof getHostedTraces;
   loadCreditOffers?: typeof getCreditOffers;
   loadCreditHistory?: typeof getCreditHistory;
@@ -886,6 +888,7 @@ export function Dashboard({
   onThemeChange,
   onAccountDeleted,
   loadConnectedDevices = getDevices,
+  revokeDeviceRequest = revokeDevice,
   loadHostedTraces = getHostedTraces,
   loadCreditOffers = getCreditOffers,
   loadCreditHistory = getCreditHistory,
@@ -916,6 +919,7 @@ export function Dashboard({
   const [shareError, setShareError] = useState<string | null>(null);
   const [shareSettingsTarget, setHostedTraceSettingsTarget] = useState<HostedTrace | null>(null);
   const [unpublishTarget, setUnpublishTarget] = useState<HostedTrace | null>(null);
+  const [copiedTraceId, setCopiedTraceId] = useState<string | null>(null);
   const [savingShare, setSavingShare] = useState<string | null>(null);
   const [credits, setCredits] = useState<CurrentUser['usage']['credits']>(user.usage.credits);
   const [creditOffers, setCreditOffers] = useState<CreditOffer[] | null>(null);
@@ -1180,7 +1184,7 @@ export function Dashboard({
     setRevoking(session.device_id);
     setSessionError(null);
     try {
-      await revokeDevice(session.device_id);
+      await revokeDeviceRequest(session.device_id);
       setSessions(
         (current) => current?.filter((item) => item.device_id !== session.device_id) || [],
       );
@@ -1232,6 +1236,17 @@ export function Dashboard({
       setShareError(errorMessage(reason, 'Could not stop sharing this Trace.'));
     } finally {
       setSavingShare(null);
+    }
+  };
+
+  const copyShareLink = async (trace: HostedTrace) => {
+    if (!trace.public_url) return;
+    setShareError(null);
+    try {
+      await navigator.clipboard.writeText(trace.public_url);
+      setCopiedTraceId(trace.trace_id);
+    } catch (reason) {
+      setShareError(errorMessage(reason, 'Could not copy this share link.'));
     }
   };
 
@@ -1348,7 +1363,14 @@ export function Dashboard({
   };
 
   const sharedCount = user.usage.hosted_traces.shared;
-  const activeCount = user.usage.hosted_traces.verifying;
+  const traceAttentionCount =
+    shares?.filter((trace) => trace.status === 'rejected' || trace.status === 'failed').length || 0;
+  const needsAttention =
+    billing.billing_status === 'review'
+      ? { href: '#/account/usage', value: 'Billing' }
+      : shareError
+        ? { href: '#/account/traces', value: 'Unavailable' }
+        : { href: '#/account/traces', value: traceAttentionCount || 'None' };
   const purchaseMode = billing.purchase_mode || 'disabled';
   const checkoutEnabled = purchaseMode === 'test' || purchaseMode === 'live';
   const subscriptionCheckoutEnabled = checkoutEnabled && billing.subscriptions_configured === true;
@@ -1366,33 +1388,33 @@ export function Dashboard({
         traceCount={user.usage.hosted_traces.total}
       />
       <div className="dashboard-layout">
-        <aside className="dashboard-sidebar" aria-label="Dashboard navigation">
+        <aside className="dashboard-sidebar" aria-label="Account navigation">
           <nav>
             <a
               className={activeView === 'overview' ? 'active' : ''}
-              href="#/dashboard"
+              href="#/account"
               aria-current={activeView === 'overview' ? 'page' : undefined}
             >
               <span>Overview</span>
             </a>
             <a
               className={activeView === 'traces' ? 'active' : ''}
-              href="#/dashboard/traces"
+              href="#/account/traces"
               aria-current={activeView === 'traces' ? 'page' : undefined}
             >
               <span>Traces</span>
               <small>{user.usage.hosted_traces.total}</small>
             </a>
             <a
-              className={activeView === 'credits' ? 'active' : ''}
-              href="#/dashboard/credits"
-              aria-current={activeView === 'credits' ? 'page' : undefined}
+              className={activeView === 'usage' ? 'active' : ''}
+              href="#/account/usage"
+              aria-current={activeView === 'usage' ? 'page' : undefined}
             >
               <span>Plan & usage</span>
             </a>
             <a
               className={activeView === 'settings' ? 'active' : ''}
-              href="#/dashboard/settings"
+              href="#/account/settings"
               aria-current={activeView === 'settings' ? 'page' : undefined}
             >
               <span>Settings</span>
@@ -1405,29 +1427,33 @@ export function Dashboard({
               <header className="dashboard-page-header">
                 <span className="eyebrow">Account</span>
                 <h1>Overview</h1>
-                <p>Account details, completed notary work, trace activity, and credit use.</p>
+                <p>Plan standing, usage, explicitly shared traces, and anything needing action.</p>
               </header>
               <div className="dashboard-summary">
                 <div>
-                  <span>{authProviderName(user)} account</span>
-                  <b>{accountIdentifier(user)}</b>
+                  <span>Current plan</span>
+                  <b>
+                    {planLabel(billing.plan)} · {billing.billing_status}
+                  </b>
                 </div>
                 <div>
-                  <span>Completed captures</span>
-                  <b>{user.usage.operations.captures}</b>
+                  <span>Capture usage</span>
+                  <b>{credits ? `${decimalSize(credits.capture.total_used_bytes)} used` : '—'}</b>
                 </div>
                 <div>
-                  <span>Completed notarizations</span>
-                  <b>{user.usage.operations.notarizations}</b>
+                  <span>Notarization usage</span>
+                  <b>
+                    {credits ? `${decimalSize(credits.notarization.total_used_bytes)} used` : '—'}
+                  </b>
                 </div>
                 <div>
                   <span>Shared traces</span>
                   <b>{shares === null ? '—' : sharedCount}</b>
                 </div>
-                <div>
-                  <span>In progress</span>
-                  <b>{shares === null ? '—' : activeCount}</b>
-                </div>
+                <a href={needsAttention.href}>
+                  <span>Needs attention</span>
+                  <b>{shares === null && !shareError ? '—' : needsAttention.value}</b>
+                </a>
               </div>
               {credits && (
                 <Suspense fallback={<CreditUtilizationFallback credits={credits} />}>
@@ -1441,7 +1467,7 @@ export function Dashboard({
               )}
             </>
           )}
-          {activeView === 'credits' && (
+          {activeView === 'usage' && (
             <>
               <header className="dashboard-page-header">
                 <span className="eyebrow">Billing</span>
@@ -1757,7 +1783,7 @@ export function Dashboard({
               <section className="dashboard-sessions" aria-labelledby="connected-services-title">
                 <header>
                   <div>
-                    <span className="eyebrow">Local service access</span>
+                    <span className="eyebrow">Account access</span>
                     <h2 id="connected-services-title">Connected devices</h2>
                   </div>
                 </header>
@@ -1803,7 +1829,7 @@ export function Dashboard({
                     )}
                   </>
                 ) : (
-                  <p className="dashboard-session-empty">No local services are connected.</p>
+                  <p className="dashboard-session-empty">No devices are connected.</p>
                 )}
               </section>
               <DeleteAccountPanel
@@ -1815,9 +1841,9 @@ export function Dashboard({
           {activeView === 'traces' && (
             <>
               <header className="dashboard-page-header">
-                <span className="eyebrow">Published evidence</span>
-                <h1>Your traces</h1>
-                <p>See which traces are live, still processing, or unavailable.</p>
+                <span className="eyebrow">Account</span>
+                <h1>Traces</h1>
+                <p>Notarized traces you’ve shared through Notary.</p>
               </header>
               <section className="dashboard-traces" aria-label="Your traces">
                 {shareError && (
@@ -1863,11 +1889,18 @@ export function Dashboard({
                           <div className="dashboard-trace-actions">
                             {share.public_url && (
                               <a href={share.public_url} target="_blank" rel="noreferrer">
-                                Open trace
+                                Open
                               </a>
                             )}
-                            {share.package_url && !share.access.password_protected && (
-                              <a href={share.package_url}>Package</a>
+                            {share.public_url && (
+                              <button type="button" onClick={() => copyShareLink(share)}>
+                                {copiedTraceId === share.trace_id ? 'Copied' : 'Copy link'}
+                              </button>
+                            )}
+                            {share.package_url && (
+                              <a href={share.package_url} download>
+                                Export .llmtrace
+                              </a>
                             )}
                             {share.status === 'shared' && (
                               <button
@@ -1877,7 +1910,7 @@ export function Dashboard({
                                   setHostedTraceSettingsTarget(share);
                                 }}
                               >
-                                Manage
+                                Manage access
                               </button>
                             )}
                             {share.status === 'shared' && (
@@ -1897,10 +1930,10 @@ export function Dashboard({
                 ) : (
                   <div className="dashboard-empty dashboard-empty--traces">
                     <span className="eyebrow">No traces</span>
-                    <b>Publish your first verified trace.</b>
+                    <b>No shared traces yet.</b>
                     <p>
-                      Notarize a local capture, check the disclosed conversation, then publish it as
-                      Unlisted or Listed.
+                      Notarized local traces appear here only after you explicitly share them as
+                      Unlisted or Listed. Connecting a device does not synchronize local traces.
                     </p>
                     <a href="#/docs/share">Open the sharing guide</a>
                   </div>
@@ -1930,12 +1963,12 @@ export function Dashboard({
           <AlertDialogHeader>
             <AlertDialogTitle>Revoke {revokeTarget?.device_name}?</AlertDialogTitle>
             <AlertDialogDescription>
-              This local service will return to public hosted limits and need a new browser approval
-              for account access or sharing.
+              This device will return to public hosted limits and need a new browser connection for
+              account access or sharing.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel disabled={Boolean(revoking)}>Keep authorization</AlertDialogCancel>
+            <AlertDialogCancel disabled={Boolean(revoking)}>Keep device</AlertDialogCancel>
             <AlertDialogAction
               disabled={Boolean(revoking)}
               onClick={() => revokeTarget && revoke(revokeTarget)}
