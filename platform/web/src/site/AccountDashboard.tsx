@@ -1899,7 +1899,7 @@ export function Dashboard({
                     <span className="eyebrow">No traces</span>
                     <b>Publish your first verified trace.</b>
                     <p>
-                      Finalize a local capture, check the disclosed conversation, then publish it as
+                      Notarize a local capture, check the disclosed conversation, then publish it as
                       Unlisted or Listed.
                     </p>
                     <a href="#/docs/share">Open the sharing guide</a>

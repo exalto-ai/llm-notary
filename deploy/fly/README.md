@@ -303,7 +303,7 @@ Normal production changes must go through CI:
 label="manual-$(git rev-parse --short=12 HEAD)-$(date -u +%Y%m%d%H%M%S)"
 fly deploy --build-only --push --image-label "$label" -c deploy/fly/notary-server.fly.toml
 fly deploy --build-only --push --image-label "$label" -c deploy/fly/notary-api.fly.toml
-fly deploy js/app --build-only --push --image-label "$label" \
+fly deploy platform/web --build-only --push --image-label "$label" \
   -c "$PWD/deploy/fly/web.fly.toml"
 
 fly auth docker
@@ -316,7 +316,7 @@ fly deploy --image "$notary_server_image" \
   --ha=false -c deploy/fly/notary-server.fly.toml
 fly deploy --image "$notary_api_image" \
   --ha=true -c deploy/fly/notary-api.fly.toml
-fly deploy js/app --image "$web_image" \
+fly deploy platform/web --image "$web_image" \
   --ha=false -c "$PWD/deploy/fly/web.fly.toml"
 ```
 

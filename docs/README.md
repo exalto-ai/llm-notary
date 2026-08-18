@@ -55,5 +55,5 @@ The local daemon serves OpenAPI 3.1 at
 `runtime/apps/admin-dashboard/src/generated/openapi.json`.
 
 The hosted API contract is committed at
-`js/app/src/platform-api/generated/openapi.json`. Regenerate both through the
+`platform/web/src/platform-api/generated/openapi.json`. Regenerate both through the
 npm scripts described in [Development and validation](development.md).

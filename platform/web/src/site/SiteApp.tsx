@@ -1,56 +1,50 @@
 import type { MouseEvent as ReactMouseEvent } from 'react';
 import { useEffect, useRef, useState } from 'react';
-import { createRoot } from 'react-dom/client';
 import '@fontsource-variable/instrument-sans';
 import '@fontsource/ibm-plex-mono/latin-400.css';
 import '@fontsource/ibm-plex-mono/latin-ext-400.css';
 import '@fontsource/ibm-plex-mono/latin-500.css';
 import '@fontsource/ibm-plex-mono/latin-ext-500.css';
-import { AuthProviderIcon } from './AuthProviderIcon';
-import { ProviderIdentity } from './ProviderIdentity';
-import { initialThemePreference, resolvedTheme } from './theme';
-import './shadcn.css';
-import './action-tokens.css';
-import './styles.css';
-import './hero-evidence.css';
-import './trust-grid.css';
-import './commons.css';
-import './branding.css';
-import './account.css';
-import './auth.css';
-import './trace.css';
-import './docs.css';
-import './legal.css';
-import './relay-animation.css';
-import './landing.css';
-import './notaries.css';
-import './axis.css';
-import './verification.css';
-import './sharing.css';
-import { getAuthProviders, getCurrentUser, logoutBrowser } from './platform-api/client';
-import { RelayAnimation } from './RelayAnimation';
-import { latestMacosDownloadHref, loadLatestPointer, macosDmgName } from './releaseDownloads';
-import {
-  AccountSettings,
-  ApiKeysPanel,
-  Dashboard,
-  DeleteAccountPanel,
-} from './site/AccountDashboard';
+import { AuthProviderIcon } from '../AuthProviderIcon';
+import { ProviderIdentity } from '../ProviderIdentity';
+import { initialThemePreference, resolvedTheme } from '../theme';
+import '../shadcn.css';
+import '../action-tokens.css';
+import '../styles.css';
+import '../hero-evidence.css';
+import '../trust-grid.css';
+import '../commons.css';
+import '../branding.css';
+import '../account.css';
+import '../auth.css';
+import '../trace.css';
+import '../docs.css';
+import '../legal.css';
+import '../relay-animation.css';
+import '../landing.css';
+import '../notaries.css';
+import '../axis.css';
+import '../verification.css';
+import '../sharing.css';
+import { getAuthProviders, getCurrentUser, logoutBrowser } from '../platform-api/client';
+import { RelayAnimation } from '../RelayAnimation';
+import { latestMacosDownloadHref, loadLatestPointer, macosDmgName } from '../releaseDownloads';
+import { AccountSettings, ApiKeysPanel, Dashboard, DeleteAccountPanel } from './AccountDashboard';
 import {
   DeviceAuthorizationApproval,
   HostedNotaryRecord,
   NotariesPage,
-} from './site/AuthorizationPages';
-import { Docs } from './site/PublicDocs';
+} from './AuthorizationPages';
+import { Docs } from './PublicDocs';
 import {
   Library,
   ListedTracesPreview,
   PublicTracePage,
   VerificationPage,
-} from './site/PublicTracePages';
+} from './PublicTracePages';
 
-const loadCreditUtilizationChart = () => import('./CreditUtilizationChart');
-const appleLogoUrl = new URL('./assets/platforms/apple.svg', import.meta.url).href;
+const loadCreditUtilizationChart = () => import('../CreditUtilizationChart');
+const appleLogoUrl = new URL('../assets/platforms/apple.svg', import.meta.url).href;
 const installCommand = 'curl -fsSL https://notary.exalto.ai/install.sh | sh';
 type CurrentUser = NonNullable<Awaited<ReturnType<typeof getCurrentUser>>>;
 type AccountIdentity = Pick<
@@ -347,8 +341,8 @@ export function Header({
 }) {
   return (
     <header className="nav-wrap">
-      <a className="brand" href="/#/">
-        <PenMark /> <span>LLM Notary</span>
+      <a className="brand" href="/#/" aria-label="Notary home">
+        <PenMark /> <span>Notary</span>
       </a>
       <nav className="product-nav">
         <a href="/#/docs">Docs</a>
@@ -469,7 +463,7 @@ export function SignInPage({
     <main className="auth-page">
       <section className="auth-panel" aria-labelledby="sign-in-title">
         <h1 id="sign-in-title">Sign in</h1>
-        <p className="auth-intro">Continue to LLM Notary.</p>
+        <p className="auth-intro">Continue to Notary.</p>
         {error ? (
           <div className="auth-state" role="alert">
             <b>Sign-in options are unavailable</b>
@@ -516,7 +510,9 @@ export function SignInPage({
 export function Footer() {
   return (
     <footer className="site-footer">
-      <span className="footer-copyright">© 2026 LLM Notary</span>
+      <span className="footer-copyright">
+        <b>Notary</b> <small>by Exalto</small> <span>· © 2026</span>
+      </span>
       <nav aria-label="Footer">
         <a href="/#/verify">Verify</a>
         <a href="/#/library">Library</a>
@@ -533,7 +529,7 @@ const legalPages = {
     eyebrow: 'Legal · Privacy',
     title: 'Privacy Policy',
     intro:
-      'This policy explains the information handled by the LLM Notary website, session-sharing service, and local tooling.',
+      'This policy explains the information handled by Notary by Exalto, its Trace-sharing service, and local tooling.',
     sections: [
       [
         'Local capture stays local',
@@ -557,7 +553,7 @@ const legalPages = {
       ],
       [
         'Your choices',
-        'You choose whether a shared session is Unlisted or Listed. Both start accessible to anyone with the link; Unlisted only keeps it out of the Library. After admission, you can unpublish it, require a password, or set an expiry. Keep private capture bundles and credentials under your control. For privacy questions or requests, contact the LLM Notary operator through the project’s support channel.',
+        'You choose whether a shared session is Unlisted or Listed. Both start accessible to anyone with the link; Unlisted only keeps it out of the Library. After admission, you can unpublish it, require a password, or set an expiry. Keep private capture bundles and credentials under your control. For privacy questions or requests, contact the Notary operator through the project’s support channel.',
       ],
       [
         'Updates',
@@ -569,11 +565,11 @@ const legalPages = {
     eyebrow: 'Legal · Terms',
     title: 'Terms of Service',
     intro:
-      'These terms govern your use of the LLM Notary website, local tooling, and session-sharing service.',
+      'These terms govern your use of Notary by Exalto, its local tooling, and Trace-sharing service.',
     sections: [
       [
         'Using the service',
-        'Use LLM Notary lawfully and only with content, credentials, and provider accounts you are authorized to use. Do not interfere with the service, bypass access controls, or submit material that infringes the rights of others.',
+        'Use Notary lawfully and only with content, credentials, and provider accounts you are authorized to use. Do not interfere with the service, bypass access controls, or submit material that infringes the rights of others.',
       ],
       [
         'Your shared sessions',
@@ -631,7 +627,7 @@ function TrustColumns() {
       '01',
       'Client',
       'Holds the plaintext',
-      'The local proxy sees the request and response. A user cannot change authenticated bytes or invent a provider response and still produce valid finalized evidence.',
+      'The local proxy sees the request and response. A user cannot change authenticated bytes or invent a provider response and still produce valid notarized evidence.',
     ],
     [
       '02',
@@ -762,7 +758,7 @@ export function Landing({ loadLatestPointer: loadPointer = loadLatestPointer }) 
         <div className="hero-actions">
           <MacosDownloadLink loadPointer={loadPointer} />
           <p className="hero-developer-path">
-            or, <a href="#/docs/getting-started">build on the LLM Notary stack</a>
+            or, <a href="#/docs/getting-started">build on the Notary stack</a>
           </p>
         </div>
       </section>
@@ -801,7 +797,7 @@ export function Landing({ loadLatestPointer: loadPointer = loadLatestPointer }) 
           <span className="eyebrow">Independent verification</span>
           <h2>Proof travels with the package.</h2>
           <p>
-            A finalized .llmtrace contains the notary-signed TLS evidence, disclosed exchange,
+            A notarized .llmtrace contains the notary-signed TLS evidence, disclosed exchange,
             canonical trace, and hashes needed for portable verification.
           </p>
           <div className="verify-points">
@@ -970,6 +966,27 @@ export function App({
   const sectionAnchor = new URLSearchParams(path.split('?')[1] || '').get('section');
   const isLibrary = section === 'library' || section === 'traces' || section === 'collections';
   const dashboardLoading = section === 'dashboard' && authPending;
+  useEffect(() => {
+    const titles: Record<string, string> = {
+      authorize: 'Connect device',
+      dashboard: 'Account',
+      docs: 'Docs',
+      library: 'Library',
+      collections: 'Library',
+      notaries: 'Registry',
+      pricing: 'Pricing',
+      privacy: 'Privacy',
+      signin: 'Sign in',
+      terms: 'Terms',
+      traces: 'Library',
+      verify: 'Verify',
+    };
+    document.title = directTraceId
+      ? 'Shared trace · Notary by Exalto'
+      : section
+        ? `${titles[section] ?? 'Notary'} · Notary by Exalto`
+        : 'Notary by Exalto';
+  }, [directTraceId, section]);
   return (
     <>
       <Header
@@ -1012,6 +1029,3 @@ export function App({
     </>
   );
 }
-
-const applicationRoot = document.getElementById('root');
-if (applicationRoot) createRoot(applicationRoot).render(<App />);

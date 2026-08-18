@@ -9,7 +9,7 @@ generated hosted OpenAPI document remains the exact HTTP contract.
 | Component | Source | State it owns | Trust boundary |
 | --- | --- | --- | --- |
 | Stable web gateway | `deploy/gateway.Caddyfile` | none | Routes public site and API traffic; it is the only component allowed to supply the trusted client-address header |
-| Hosted website | `js/app/` | browser UI state | Renders public docs, verification, Library, sign-in, account, billing, device approval, and hosted Trace management |
+| Hosted website | `platform/web/` | browser UI state | Renders public docs, verification, public Traces, sign-in, Account, billing, device approval, and hosted Trace management |
 | Hosted API | `platform/crates/notary-api/` | PostgreSQL accounts, sessions, keys, credits, operations, Traces, reports, and cleanup work | Authenticates public and account requests, issues admission tickets, verifies uploads, and owns hosted policy |
 | Generic notary | `runtime/crates/notary-server/` | signing key and process-local capacity | Runs the public Proxy-TLS protocol and provider allowlist without account or billing semantics |
 | Platform policy adapter | `platform/crates/notary-server-platform-adapter/` | private durable usage-settlement outbox | Injects ticket redemption and settlement through the generic `AdmissionPolicy` and `SessionLifecycle` seams |
@@ -138,7 +138,7 @@ settlement, refund, dispute, and subscription behavior is documented in
 ## Hosted API route inventory
 
 The generated contract is committed at
-`js/app/src/platform-api/generated/openapi.json`. This inventory assigns every
+`platform/web/src/platform-api/generated/openapi.json`. This inventory assigns every
 operation to one flow so a route cannot land without an owner and documentation
 review.
 

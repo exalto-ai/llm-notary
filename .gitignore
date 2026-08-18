@@ -13,9 +13,9 @@
 *.sqlite
 *.bundle.json
 notary-api.db
-js/app/node_modules/
-js/app/dist/
-js/app/.vitest-attachments/
+platform/web/node_modules/
+platform/web/dist/
+platform/web/.vitest-attachments/
 apps/notary-app/node_modules/
 apps/notary-app/dist/
 apps/notary-app/src-tauri/binaries/notaryd-*

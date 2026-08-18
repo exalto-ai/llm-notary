@@ -90,7 +90,7 @@ services:
   site:
     image: ${WEB_IMAGE:-llm-notary-web:local}
     build:
-      context: ./js/app
+      context: ./platform/web
       dockerfile: Dockerfile
       args:
         LLM_NOTARY_PUBLIC_ORIGIN: ${NOTARY_PUBLIC_ORIGIN:?Set NOTARY_PUBLIC_ORIGIN to the public site origin}
