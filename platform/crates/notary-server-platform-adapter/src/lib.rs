@@ -643,13 +643,14 @@ fn operation_constraints(
     if authenticated_allowance > policy_attestable {
         bail!("platform allowance exceeds its per-session ceiling");
     }
+    let max_total_private_chunk_bytes = authenticated_allowance.min(policy_attestable);
     Ok(AdmissionConstraints {
         expected_record_digest,
         expected_transcript_bytes: (mode == NotarySessionMode::Notarization)
             .then_some(authenticated_allowance),
         session_timeout: None,
-        max_private_chunk_bytes: Some(max_private_chunk_bytes),
-        max_total_private_chunk_bytes: Some(authenticated_allowance.min(policy_attestable)),
+        max_private_chunk_bytes: Some(max_private_chunk_bytes.min(max_total_private_chunk_bytes)),
+        max_total_private_chunk_bytes: Some(max_total_private_chunk_bytes),
         max_private_chunk_commitments: Some(positive(
             "max_private_chunk_commitments",
             operation.max_private_chunk_commitments,
@@ -811,6 +812,27 @@ mod tests {
     }
 
     #[test]
+    fn small_notarization_allowance_caps_the_private_chunk_limit() {
+        let operation = RedeemedOperation {
+            operation_id: "operation-small-notarization".to_owned(),
+            activation_deadline: 1234,
+            max_attestable_http_bytes: 8 << 20,
+            max_frame_bytes: 64 << 20,
+            max_private_chunk_bytes: 256 << 10,
+            max_private_chunk_commitments: 256,
+            record_digest: Some("ab".repeat(32)),
+            notarization_allowance_bytes: Some(64 << 10),
+        };
+
+        let limits = operation_constraints(NotarySessionMode::Notarization, &operation)
+            .expect("a small authenticated transcript must produce coherent limits");
+
+        assert_eq!(limits.max_private_chunk_bytes, Some(64 << 10));
+        assert_eq!(limits.max_total_private_chunk_bytes, Some(64 << 10));
+        assert_eq!(limits.expected_transcript_bytes, Some(64 << 10));
+    }
+
+    #[test]
     fn capture_policy_rejects_a_notarization_digest() {
         let operation = RedeemedOperation {
             operation_id: "operation-capture".to_owned(),
@@ -928,7 +950,7 @@ mod tests {
                             "max_private_chunk_bytes": 512,
                             "max_private_chunk_commitments": 4,
                             "record_digest": notarization.then(|| "11".repeat(32)),
-                            "notarization_allowance_bytes": notarization.then_some(1024)
+                            "notarization_allowance_bytes": notarization.then_some(256)
                         }))
                     },
                 ),
