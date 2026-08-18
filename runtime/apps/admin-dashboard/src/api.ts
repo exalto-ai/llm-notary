@@ -16,6 +16,8 @@ export type AccountConnection = components['schemas']['AccountConnectionResponse
 export type AccountConnectionStarted = components['schemas']['AccountConnectionStartedResponse'];
 export type Share = components['schemas']['TraceShare'];
 export type ShareVisibility = components['schemas']['ShareVisibility'];
+export type ShareSettings =
+  paths['/v1/traces/{trace_id}/share']['put']['requestBody']['content']['application/json'];
 type TraceList = paths['/v1/traces']['get']['responses'][200]['content']['application/json'];
 type TraceFilters = NonNullable<paths['/v1/traces']['get']['parameters']['query']>;
 type NotarizationResult =
@@ -148,10 +150,10 @@ export const localApi = {
   pollAccountConnection: (requestId: string) =>
     request<AccountConnection>(`/v1/account/${encodeURIComponent(requestId)}`),
   disconnectAccount: () => request<void>('/v1/account', { method: 'DELETE' }),
-  share: (traceId: string, visibility: ShareVisibility) =>
+  share: (traceId: string, settings: ShareSettings) =>
     request<Share>(`/v1/traces/${encodeURIComponent(traceId)}/share`, {
       method: 'PUT',
-      body: { visibility },
+      body: settings,
     }),
   shareStatus: (traceId: string) =>
     request<Share>(`/v1/traces/${encodeURIComponent(traceId)}/share`),

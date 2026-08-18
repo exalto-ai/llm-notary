@@ -176,7 +176,16 @@ describe('Notary admin dashboard', () => {
   });
 
   test('opens notarized evidence from the same trace route', async () => {
-    renderDashboard('/traces/trc-20260727-research-brief');
+    const fixture = createFixtureApi();
+    let requestedSettings: Parameters<LocalApi['share']>[1] | null = null;
+    const api: LocalApi = {
+      ...fixture,
+      share: async (traceId, settings) => {
+        requestedSettings = settings;
+        return fixture.share(traceId, settings);
+      },
+    };
+    renderDashboard('/traces/trc-20260727-research-brief', api);
     await expect
       .element(page.getByRole('heading', { name: 'Prompt and response preview' }))
       .toBeVisible();
@@ -188,15 +197,74 @@ describe('Notary admin dashboard', () => {
     await expect.element(page.getByRole('tab', { name: 'Technical' })).toBeVisible();
     await expect.element(page.getByText('Private on this device', { exact: true })).toBeVisible();
     await page.getByRole('button', { name: 'Share' }).click();
-    await expect.element(page.getByText('Anyone with the URL can read')).toBeVisible();
-    await page.getByRole('button', { name: 'Create unlisted share' }).click();
-    await expect.element(page.getByText('Unlisted share', { exact: true })).toBeVisible();
+    await expect
+      .element(page.getByRole('heading', { name: 'Review and share this Trace' }))
+      .toBeVisible();
+    await expect.element(page.getByText('Exact package disclosure')).toBeVisible();
+    await expect.element(page.getByText('Sample User')).toBeVisible();
+    await expect
+      .element(page.getByText('Raw HTTP header values and provider credentials'))
+      .toBeVisible();
+    await expect.element(page.getByText(/Unlisted is not private/)).toBeVisible();
+    await page.getByLabelText('Share visibility').click();
+    await page.getByRole('option', { name: 'Listed · public discovery' }).click();
+    await page.getByLabelText('Optional password').fill('evidence-pass');
+    await page.getByLabelText('Share expiration').click();
+    await page.getByRole('option', { name: '7 days' }).click();
+    await page.getByRole('button', { name: 'Share trace' }).click();
+    await expect.element(page.getByText('Preparing', { exact: true })).toBeVisible();
+    expect(requestedSettings).toEqual({
+      visibility: 'listed',
+      password: 'evidence-pass',
+      expires_in_days: 7,
+    });
+  });
+
+  test('connects an account in place and returns to the same Trace review', async () => {
+    const api = createFixtureApi();
+    await api.disconnectAccount();
+    renderDashboard('/traces/trc-20260727-research-brief', api);
+
+    await page.getByRole('button', { name: 'Share' }).click();
+    await expect
+      .element(page.getByRole('heading', { name: 'Connect an account to share' }))
+      .toBeVisible();
+    await expect
+      .element(page.getByText(/Connecting an account does not upload or share local evidence/))
+      .toBeVisible();
+    await page.getByRole('button', { name: 'Connect account' }).click();
+    await expect.element(page.getByText('NOTARY-7K3')).toBeVisible();
+    await page.getByRole('button', { name: 'Check approval' }).click();
+    await expect
+      .element(page.getByRole('heading', { name: 'Review and share this Trace' }))
+      .toBeVisible();
+    expect(window.location.hash).toBe('#/traces/trc-20260727-research-brief');
+  });
+
+  test('keeps every share progress stage inline on the originating Trace', async () => {
+    const traceId = 'trc-20260727-research-brief';
+    for (const progress of ['preparing', 'uploading', 'verifying', 'shared'] as const) {
+      renderDashboard(
+        `/traces/${traceId}`,
+        createFixtureApi({
+          initialShare: { traceId, visibility: 'unlisted', accessEnabled: true, progress },
+        }),
+      );
+      const timeline = page.getByRole('list', { name: 'Share progress' });
+      await expect
+        .element(timeline.getByText(progress[0].toUpperCase() + progress.slice(1)))
+        .toHaveAttribute('aria-current', 'step');
+      cleanup();
+    }
   });
 
   test('shows private Captured detail, progress, retry, and ineligibility in one inspector', async () => {
     renderDashboard('/traces/trc-20260728-safety-review');
     await expect.element(page.getByText('Private on this device', { exact: true })).toBeVisible();
     await expect.element(page.getByRole('button', { name: 'Copy Trace ID' })).toBeVisible();
+    await expect
+      .element(page.getByRole('button', { name: 'Share', exact: true }))
+      .not.toBeInTheDocument();
     await page.getByRole('tab', { name: 'Notarization' }).click();
     await expect
       .element(page.getByRole('progressbar', { name: 'Private transcript bytes authenticated' }))
@@ -723,14 +791,101 @@ describe('Notary admin dashboard', () => {
     });
     renderDashboard(`/traces/${traceId}`, api);
 
-    await expect.element(page.getByText('Listed share', { exact: true })).toBeVisible();
+    await expect.element(page.getByText('Shared', { exact: true }).first()).toBeVisible();
     await expect
       .element(page.getByText('This disclosed Trace is publicly listed and readable.'))
       .toBeVisible();
-    await expect.element(page.getByRole('button', { name: 'Copy URL' })).toBeVisible();
+    await expect.element(page.getByRole('button', { name: 'Copy link' })).toBeVisible();
+    await expect.element(page.getByRole('link', { name: 'Open shared trace' })).toBeVisible();
+    await expect.element(page.getByRole('button', { name: 'Manage access' })).toBeVisible();
     await expect
       .element(page.getByRole('button', { name: 'Share', exact: true }))
       .not.toBeInTheDocument();
+  });
+
+  test('manages visibility, password, and expiration on the canonical share', async () => {
+    const traceId = 'trc-20260727-research-brief';
+    const fixture = createFixtureApi({
+      initialShare: {
+        traceId,
+        visibility: 'listed',
+        accessEnabled: true,
+        passwordProtected: true,
+        expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000,
+      },
+    });
+    let requestedSettings: Parameters<LocalApi['share']>[1] | null = null;
+    const api: LocalApi = {
+      ...fixture,
+      share: async (id, settings) => {
+        requestedSettings = settings;
+        return fixture.share(id, settings);
+      },
+    };
+    renderDashboard(`/traces/${traceId}`, api);
+
+    await page.getByRole('button', { name: 'Manage access' }).click();
+    await expect.element(page.getByRole('heading', { name: 'Manage access' })).toBeVisible();
+    await page.getByLabelText('Share visibility').click();
+    await page.getByRole('option', { name: 'Unlisted · link access' }).click();
+    await page.getByLabelText('Password protection').click();
+    await page.getByRole('option', { name: 'Remove password' }).click();
+    await page.getByLabelText('Share expiration').click();
+    await page.getByRole('option', { name: 'No expiration' }).click();
+    await page.getByRole('button', { name: 'Save access' }).click();
+
+    expect(requestedSettings).toEqual({
+      visibility: 'unlisted',
+      password: '',
+      expires_in_days: 0,
+    });
+    await expect
+      .element(page.getByText('Anyone with this URL can read the disclosed Trace.'))
+      .toBeVisible();
+    await expect
+      .element(page.getByRole('link', { name: 'Open shared trace' }))
+      .toHaveAttribute('href', 'https://notary.example/traces/share-fixture');
+  });
+
+  test('keeps failed and rejected shares actionable with safe details', async () => {
+    const traceId = 'trc-20260727-research-brief';
+    renderDashboard(
+      `/traces/${traceId}`,
+      createFixtureApi({
+        initialShare: {
+          traceId,
+          visibility: 'unlisted',
+          accessEnabled: false,
+          progress: 'failed',
+          failureCode: 'upload_expired',
+        },
+      }),
+    );
+    await expect.element(page.getByText('Sharing failed', { exact: true })).toBeVisible();
+    await expect.element(page.getByText('upload_expired')).toBeVisible();
+    await page.getByRole('button', { name: 'Retry sharing' }).click();
+    await expect
+      .element(page.getByRole('heading', { name: 'Review and retry sharing' }))
+      .toBeVisible();
+    await page.getByRole('button', { name: 'Share trace' }).click();
+    await expect.element(page.getByText('Preparing', { exact: true }).first()).toBeVisible();
+
+    cleanup();
+    renderDashboard(
+      `/traces/${traceId}`,
+      createFixtureApi({
+        initialShare: {
+          traceId,
+          visibility: 'unlisted',
+          accessEnabled: false,
+          progress: 'rejected',
+          failureCode: 'high_entropy_disclosure',
+        },
+      }),
+    );
+    await expect.element(page.getByText('Rejected', { exact: true })).toBeVisible();
+    await expect.element(page.getByText('high_entropy_disclosure')).toBeVisible();
+    await expect.element(page.getByRole('button', { name: 'Review disclosure' })).toBeVisible();
   });
 
   test('does not present an access-disabled share as publicly readable', async () => {
@@ -742,7 +897,7 @@ describe('Notary admin dashboard', () => {
 
     await expect.element(page.getByText('Public access is disabled for this share.')).toBeVisible();
     await expect.element(page.getByRole('button', { name: 'Stop sharing' })).toBeVisible();
-    await expect.element(page.getByRole('button', { name: 'Copy URL' })).not.toBeInTheDocument();
+    await expect.element(page.getByRole('button', { name: 'Copy link' })).not.toBeInTheDocument();
     await expect
       .element(page.getByRole('button', { name: 'Share', exact: true }))
       .not.toBeInTheDocument();
@@ -761,7 +916,7 @@ describe('Notary admin dashboard', () => {
     };
     renderDashboard(`/traces/${traceId}`, api);
 
-    await expect.element(page.getByText('Unlisted share', { exact: true })).toBeVisible();
+    await expect.element(page.getByText('Shared', { exact: true }).first()).toBeVisible();
     await expect
       .element(page.getByText('Could not refresh share status. Showing the last known state.'))
       .toBeVisible();
@@ -775,21 +930,28 @@ describe('Notary admin dashboard', () => {
   test('restores a persisted share when the Trace inspector reloads', async () => {
     const traceId = 'trc-20260727-research-brief';
     const api = createFixtureApi();
-    await api.share(traceId, 'unlisted');
+    await api.share(traceId, { visibility: 'unlisted' });
     await api.shareStatus(traceId);
     await api.shareStatus(traceId);
     await api.shareStatus(traceId);
 
     renderDashboard(`/traces/${traceId}`, api);
-    await expect.element(page.getByRole('button', { name: 'Copy URL' })).toBeVisible();
+    await expect.element(page.getByRole('button', { name: 'Copy link' })).toBeVisible();
     await expect.element(page.getByRole('button', { name: 'Stop sharing' })).toBeVisible();
 
     cleanup();
     renderDashboard(`/traces/${traceId}`, api);
-    await expect.element(page.getByRole('button', { name: 'Copy URL' })).toBeVisible();
+    await expect.element(page.getByRole('button', { name: 'Copy link' })).toBeVisible();
     await page.getByRole('button', { name: 'Stop sharing' }).click();
+    await expect
+      .element(page.getByRole('heading', { name: 'Stop sharing this Trace?' }))
+      .toBeVisible();
+    await page.getByRole('alertdialog').getByRole('button', { name: 'Stop sharing' }).click();
     await expect
       .element(page.getByRole('button', { name: 'Stop sharing' }))
       .not.toBeInTheDocument();
+    await page.getByRole('button', { name: 'Share', exact: true }).click();
+    await page.getByRole('button', { name: 'Share trace' }).click();
+    await expect.element(page.getByText('Preparing', { exact: true }).first()).toBeVisible();
   });
 });

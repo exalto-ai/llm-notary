@@ -17,6 +17,17 @@ import { LocalApiError } from './api';
 const hour = 60 * 60 * 1000;
 const fixtureNow = Date.UTC(2026, 6, 28, 16, 42, 0);
 
+type FixtureShareState = {
+  captureId: string;
+  progress: 'preparing' | 'uploading' | 'verifying' | 'shared' | 'rejected' | 'failed';
+  visibility: ShareVisibility;
+  accessEnabled: boolean;
+  passwordProtected: boolean;
+  expiresAt: number | null;
+  failureCode: string | null;
+  updatedAt: number;
+};
+
 const proofProgress = (
   bytesCompleted: number,
   bytesTotal: number,
@@ -683,6 +694,10 @@ export function createFixtureApi({
     traceId: string;
     visibility: ShareVisibility;
     accessEnabled: boolean;
+    passwordProtected?: boolean;
+    expiresAt?: number | null;
+    progress?: FixtureShareState['progress'];
+    failureCode?: string | null;
   };
 } = {}): LocalApi {
   const clock = Number.isFinite(nowUnixMs) && nowUnixMs > 0 ? nowUnixMs : Date.now();
@@ -741,22 +756,16 @@ export function createFixtureApi({
   let captureEnabled = fixtureStatus.capture_enabled;
   const progressingOperations = new Set<string>();
   const operationPolls = new Map<string, number>();
-  const shares = new Map<
-    string,
-    {
-      captureId: string;
-      progress: 'preparing' | 'verifying' | 'shared';
-      visibility: ShareVisibility;
-      accessEnabled: boolean;
-      updatedAt: number;
-    }
-  >();
+  const shares = new Map<string, FixtureShareState>();
   if (initialShare) {
     shares.set('share-fixture', {
       captureId: initialShare.traceId,
-      progress: 'shared',
+      progress: initialShare.progress ?? 'shared',
       visibility: initialShare.visibility,
       accessEnabled: initialShare.accessEnabled,
+      passwordProtected: initialShare.passwordProtected ?? false,
+      expiresAt: initialShare.expiresAt ?? null,
+      failureCode: initialShare.failureCode ?? null,
       updatedAt: clock,
     });
   }
@@ -885,23 +894,15 @@ export function createFixtureApi({
     progressingOperations.delete(operationId);
     operationPolls.delete(operationId);
   };
-  const fixtureShare = (
-    shareId: string,
-    share: {
-      captureId: string;
-      progress: 'preparing' | 'verifying' | 'shared';
-      visibility: ShareVisibility;
-      accessEnabled: boolean;
-      updatedAt: number;
-    },
-  ): Share => ({
+  const fixtureShare = (shareId: string, share: FixtureShareState): Share => ({
     trace_id: share.captureId,
     progress: share.progress,
     visibility: share.visibility,
     access_enabled: share.accessEnabled,
-    password_protected: false,
+    password_protected: share.passwordProtected,
+    expires_at_unix_ms: share.expiresAt,
     updated_at_unix_ms: share.updatedAt,
-    failure_code: null,
+    failure_code: share.failureCode,
     share_url: share.progress === 'shared' ? `https://notary.example/traces/${shareId}` : null,
     package_url:
       share.progress === 'shared'
@@ -1194,16 +1195,30 @@ export function createFixtureApi({
     disconnectAccount: async () => {
       account = { signed_in: false, connection_state: 'disconnected', links: account.links };
     },
-    share: async (captureId, visibility) => {
+    share: async (captureId, settings) => {
       if (!traces.has(captureId))
         throw new LocalApiError(404, 'notarized_trace_not_found', 'Notarized trace not found');
-      const shareId = 'share-fixture';
-      const share = {
+      const existing = [...shares.entries()].find(([, share]) => share.captureId === captureId);
+      const shareId = existing?.[0] ?? 'share-fixture';
+      const previous = existing?.[1];
+      const updatedAt = actionTimestamp();
+      const share: FixtureShareState = {
         captureId,
-        progress: 'preparing' as const,
-        visibility,
+        progress: previous?.progress === 'shared' ? 'shared' : 'preparing',
+        visibility: settings.visibility,
         accessEnabled: true,
-        updatedAt: actionTimestamp(),
+        passwordProtected:
+          settings.password == null
+            ? (previous?.passwordProtected ?? false)
+            : settings.password.length > 0,
+        expiresAt:
+          settings.expires_in_days == null
+            ? (previous?.expiresAt ?? null)
+            : settings.expires_in_days === 0
+              ? null
+              : updatedAt + settings.expires_in_days * 24 * hour,
+        failureCode: null,
+        updatedAt,
       };
       shares.set(shareId, share);
       return fixtureShare(shareId, share);
