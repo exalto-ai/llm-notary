@@ -1,12 +1,12 @@
 import { createTheme, MantineProvider } from '@mantine/core';
-import { Notifications } from '@mantine/notifications';
+import { Notifications, notifications } from '@mantine/notifications';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { cleanup, render } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { page, userEvent } from 'vitest/browser';
-import { type LocalApi, LocalApiError } from './api';
+import { type LocalApi, LocalApiError, type TraceSummary } from './api';
 import { Dashboard } from './Dashboard';
-import { createFixtureApi, fixtureNotaries } from './fixtures';
+import { createFixtureApi, fixtureCaptures, fixtureNotaries } from './fixtures';
 import '@mantine/core/styles.css';
 import '@mantine/notifications/styles.css';
 
@@ -27,6 +27,8 @@ function renderDashboard(hash = '/overview', api: LocalApi = createFixtureApi(),
 
 beforeEach(() => localStorage.clear());
 afterEach(() => {
+  notifications.clean();
+  notifications.cleanQueue();
   cleanup();
   vi.useRealTimers();
   vi.restoreAllMocks();
@@ -75,6 +77,51 @@ describe('Notary admin dashboard', () => {
     await expect.element(page.getByText('trc-20260727-benchmark').first()).toBeVisible();
   });
 
+  test('keeps lifecycle primary while placing operational filters under More filters', async () => {
+    renderDashboard('/traces?status=notarizing');
+    await expect.element(page.getByRole('button', { name: 'All', exact: true })).toBeVisible();
+    await expect.element(page.getByRole('button', { name: 'Captured', exact: true })).toBeVisible();
+    await expect
+      .element(page.getByRole('button', { name: 'Notarized', exact: true }))
+      .toBeVisible();
+    await expect.element(page.getByRole('combobox', { name: 'Provider filter' })).toBeVisible();
+    await expect.element(page.getByRole('combobox', { name: 'Trace time filter' })).toBeVisible();
+    await expect
+      .element(page.getByRole('combobox', { name: 'Operational status filter' }))
+      .toBeVisible();
+    await expect.element(page.getByText('notarizing', { exact: true }).first()).toBeVisible();
+
+    cleanup();
+    renderDashboard('/traces');
+    await expect
+      .element(page.getByRole('combobox', { name: 'Operational status filter' }))
+      .not.toBeInTheDocument();
+    await page.getByRole('button', { name: 'More filters' }).click();
+    await expect.element(page.getByLabelText('Model filter')).toBeVisible();
+    await expect.element(page.getByRole('combobox', { name: 'Streaming filter' })).toBeVisible();
+  });
+
+  test('uses the provider identity when no private prompt preview is retained', async () => {
+    const fixture = createFixtureApi();
+    const fallback: TraceSummary = {
+      ...structuredClone(fixtureCaptures[0]),
+      prompt_preview: '',
+      provider: 'openai',
+      state: 'captured',
+      status: 'notarizing',
+    };
+    const api: LocalApi = {
+      ...fixture,
+      traces: async () => ({ items: [fallback], next_cursor: null }),
+      trace: async () => ({ ...(await fixture.trace(fallback.trace_id)), ...fallback }),
+    };
+    renderDashboard('/traces', api);
+    await expect.element(page.getByText('OpenAI request', { exact: true }).first()).toBeVisible();
+    await expect
+      .element(page.getByText('Captured · Notarizing', { exact: true }).first())
+      .toBeVisible();
+  });
+
   test('loads another trace cursor without downloading the catalog', async () => {
     const fixture = createFixtureApi();
     const samples = (await fixture.traces({ limit: 200 })).items;
@@ -97,15 +144,144 @@ describe('Notary admin dashboard', () => {
 
   test('opens notarized evidence from the same trace route', async () => {
     renderDashboard('/traces/trc-20260727-research-brief');
-    await expect.element(page.getByRole('heading', { name: 'Prompt and response' })).toBeVisible();
-    await expect.element(page.getByRole('button', { name: 'Verify locally' })).toBeVisible();
     await expect
-      .element(page.getByRole('button', { name: 'Download verified package' }))
+      .element(page.getByRole('heading', { name: 'Prompt and response preview' }))
       .toBeVisible();
+    await expect.element(page.getByRole('button', { name: 'Verify locally' })).toBeVisible();
+    await expect.element(page.getByRole('button', { name: 'Export .llmtrace' })).toBeVisible();
+    await expect.element(page.getByRole('tab', { name: 'Summary' })).toBeVisible();
+    await expect.element(page.getByRole('tab', { name: 'Notarization' })).toBeVisible();
+    await expect.element(page.getByRole('tab', { name: 'Evidence' })).toBeVisible();
+    await expect.element(page.getByRole('tab', { name: 'Technical' })).toBeVisible();
+    await expect.element(page.getByText('Private on this device', { exact: true })).toBeVisible();
     await page.getByRole('button', { name: 'Share' }).click();
     await expect.element(page.getByText('Anyone with the URL can read')).toBeVisible();
     await page.getByRole('button', { name: 'Create unlisted share' }).click();
     await expect.element(page.getByText('Unlisted share', { exact: true })).toBeVisible();
+  });
+
+  test('shows private Captured detail, progress, retry, and ineligibility in one inspector', async () => {
+    renderDashboard('/traces/trc-20260728-safety-review');
+    await expect.element(page.getByText('Private on this device', { exact: true })).toBeVisible();
+    await expect.element(page.getByRole('button', { name: 'Copy Trace ID' })).toBeVisible();
+    await page.getByRole('tab', { name: 'Notarization' }).click();
+    await expect
+      .element(page.getByRole('progressbar', { name: 'Private transcript bytes authenticated' }))
+      .toHaveAttribute('aria-valuenow', '612352');
+    await expect.element(page.getByText('Attempt 1', { exact: true })).toBeVisible();
+    await page.getByRole('button', { name: 'View Trace activity' }).click();
+    await expect
+      .element(page.getByLabelText('Activity trace ID'))
+      .toHaveValue('trc-20260728-safety-review');
+
+    cleanup();
+    renderDashboard('/traces/trc-20260727-benchmark');
+    await expect.element(page.getByRole('button', { name: 'Retry notarization' })).toBeVisible();
+    await page.getByRole('tab', { name: 'Notarization' }).click();
+    await expect.element(page.getByText('Attempt 2', { exact: true })).toBeVisible();
+    await expect.element(page.getByText('notary_capacity', { exact: true }).first()).toBeVisible();
+
+    cleanup();
+    renderDashboard('/traces/trc-20260728-auth-error');
+    await expect
+      .element(page.getByText('Provider response cannot be notarized', { exact: true }))
+      .toBeVisible();
+    await expect
+      .element(page.getByRole('button', { name: 'Notarize', exact: true }))
+      .not.toBeInTheDocument();
+  });
+
+  test('moves a Trace atomically from Captured to Notarized on the same route', async () => {
+    const fixture = createFixtureApi();
+    const captured = structuredClone(fixtureCaptures[0]);
+    const packageTemplate = await fixture.traceContent('trc-20260727-research-brief');
+    let current: TraceSummary = captured;
+    let packageReads = 0;
+    const api: LocalApi = {
+      ...fixture,
+      traces: async () => ({ items: [current], next_cursor: null }),
+      trace: async () => ({ ...(await fixture.trace(captured.trace_id)), ...current }),
+      startNotarization: async (traceId) => {
+        const result = await fixture.startNotarization(traceId);
+        current = { ...current, state: 'notarized', status: null };
+        return result;
+      },
+      traceContent: async (traceId) => {
+        packageReads += 1;
+        return { ...packageTemplate, trace_id: traceId };
+      },
+    };
+    renderDashboard(`/traces/${captured.trace_id}`, api);
+    await expect.element(page.getByRole('button', { name: 'Notarize', exact: true })).toBeVisible();
+    expect(packageReads).toBe(0);
+    await page.getByRole('button', { name: 'Notarize', exact: true }).click();
+    await expect.element(page.getByRole('button', { name: 'Export .llmtrace' })).toBeVisible();
+    expect(window.location.hash).toBe(`#/traces/${captured.trace_id}`);
+    expect(packageReads).toBeGreaterThan(0);
+  });
+
+  test('exports the exact package bytes with the canonical Trace identity', async () => {
+    const fixture = createFixtureApi();
+    const traceId = 'trc-20260727-research-brief';
+    const packageBytes = new Blob(['exact package bytes'], { type: 'application/zip' });
+    const downloadPackage = vi.fn(async () => packageBytes);
+    const createObjectURL = vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:exact-package');
+    vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined);
+    let downloadedAs = '';
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (
+      this: HTMLAnchorElement,
+    ) {
+      downloadedAs = this.download;
+    });
+    renderDashboard(`/traces/${traceId}`, { ...fixture, downloadPackage });
+    await page.getByRole('button', { name: 'Export .llmtrace' }).click();
+    await expect.poll(() => downloadPackage).toHaveBeenCalledWith(traceId);
+    expect(createObjectURL).toHaveBeenCalledWith(packageBytes);
+    expect(downloadedAs).toBe(`${traceId}.llmtrace`);
+  });
+
+  test('uses explicit empty, loading, and error states for the trace collection', async () => {
+    const fixture = createFixtureApi();
+    const emptyApi: LocalApi = {
+      ...fixture,
+      traces: async () => ({ items: [], next_cursor: null }),
+    };
+    renderDashboard('/traces', emptyApi);
+    await expect
+      .element(page.getByRole('heading', { name: 'No traces have been captured yet.' }))
+      .toBeVisible();
+    await page.getByRole('button', { name: 'Captured', exact: true }).click();
+    await expect
+      .element(
+        page.getByRole('heading', { name: 'No traces are currently in the Captured state.' }),
+      )
+      .toBeVisible();
+    await page.getByRole('button', { name: 'Notarized', exact: true }).click();
+    await expect
+      .element(page.getByRole('heading', { name: 'No traces have been notarized yet.' }))
+      .toBeVisible();
+    await page.getByLabelText('Search traces').fill('missing');
+    await expect
+      .element(page.getByRole('heading', { name: 'No traces match these filters.' }))
+      .toBeVisible();
+
+    cleanup();
+    renderDashboard('/traces', {
+      ...fixture,
+      traces: async () => {
+        throw new LocalApiError(503, 'service_unavailable', 'Unavailable');
+      },
+    });
+    await expect
+      .element(page.getByRole('heading', { name: 'Traces are unavailable' }))
+      .toBeVisible();
+
+    cleanup();
+    renderDashboard('/traces', {
+      ...fixture,
+      traces: () => new Promise(() => undefined),
+    });
+    await expect.element(page.getByText('Loading local evidence', { exact: true })).toBeVisible();
   });
 
   test('uses the generated Trace date-filter contract', async () => {
@@ -344,5 +520,82 @@ describe('Notary admin dashboard', () => {
     await userEvent.keyboard('{ArrowRight}');
     await expect.element(divider).toHaveAttribute('aria-valuenow', '336');
     expect(localStorage.getItem('notary-admin-dashboard-split-width')).toBe('336');
+  });
+
+  test('preserves a persisted Listed share without changing its visibility', async () => {
+    const traceId = 'trc-20260727-research-brief';
+    const api = createFixtureApi({
+      initialShare: { traceId, visibility: 'listed', accessEnabled: true },
+    });
+    renderDashboard(`/traces/${traceId}`, api);
+
+    await expect.element(page.getByText('Listed share', { exact: true })).toBeVisible();
+    await expect
+      .element(page.getByText('This disclosed Trace is publicly listed and readable.'))
+      .toBeVisible();
+    await expect.element(page.getByRole('button', { name: 'Copy URL' })).toBeVisible();
+    await expect
+      .element(page.getByRole('button', { name: 'Share', exact: true }))
+      .not.toBeInTheDocument();
+  });
+
+  test('does not present an access-disabled share as publicly readable', async () => {
+    const traceId = 'trc-20260727-research-brief';
+    const api = createFixtureApi({
+      initialShare: { traceId, visibility: 'unlisted', accessEnabled: false },
+    });
+    renderDashboard(`/traces/${traceId}`, api);
+
+    await expect.element(page.getByText('Public access is disabled for this share.')).toBeVisible();
+    await expect.element(page.getByRole('button', { name: 'Stop sharing' })).toBeVisible();
+    await expect.element(page.getByRole('button', { name: 'Copy URL' })).not.toBeInTheDocument();
+    await expect
+      .element(page.getByRole('button', { name: 'Share', exact: true }))
+      .not.toBeInTheDocument();
+  });
+
+  test('keeps the last persisted share visible when status refresh fails', async () => {
+    const traceId = 'trc-20260727-research-brief';
+    const fixture = createFixtureApi({
+      initialShare: { traceId, visibility: 'unlisted', accessEnabled: true },
+    });
+    const api: LocalApi = {
+      ...fixture,
+      shareStatus: async () => {
+        throw new LocalApiError(503, 'share_status_unavailable', 'Unavailable');
+      },
+    };
+    renderDashboard(`/traces/${traceId}`, api);
+
+    await expect.element(page.getByText('Unlisted share', { exact: true })).toBeVisible();
+    await expect
+      .element(page.getByText('Could not refresh share status. Showing the last known state.'))
+      .toBeVisible();
+    await expect.element(page.getByRole('button', { name: 'Stop sharing' })).toBeVisible();
+    await expect.element(page.getByRole('button', { name: 'Retry status' })).toBeVisible();
+    await expect
+      .element(page.getByRole('button', { name: 'Share', exact: true }))
+      .not.toBeInTheDocument();
+  });
+
+  test('restores a persisted share when the Trace inspector reloads', async () => {
+    const traceId = 'trc-20260727-research-brief';
+    const api = createFixtureApi();
+    await api.share(traceId, 'unlisted');
+    await api.shareStatus(traceId);
+    await api.shareStatus(traceId);
+    await api.shareStatus(traceId);
+
+    renderDashboard(`/traces/${traceId}`, api);
+    await expect.element(page.getByRole('button', { name: 'Copy URL' })).toBeVisible();
+    await expect.element(page.getByRole('button', { name: 'Stop sharing' })).toBeVisible();
+
+    cleanup();
+    renderDashboard(`/traces/${traceId}`, api);
+    await expect.element(page.getByRole('button', { name: 'Copy URL' })).toBeVisible();
+    await page.getByRole('button', { name: 'Stop sharing' }).click();
+    await expect
+      .element(page.getByRole('button', { name: 'Stop sharing' }))
+      .not.toBeInTheDocument();
   });
 });

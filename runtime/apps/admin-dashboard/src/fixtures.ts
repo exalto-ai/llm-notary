@@ -4,6 +4,7 @@ import type {
   LocalApi,
   Notaries,
   Operation,
+  Share,
   ShareVisibility,
   Status,
   TraceContent,
@@ -508,7 +509,12 @@ const fixtureVerification: Verification = {
   trust_source: 'registry',
 };
 
-function detail(captureId: string, captures: TraceSummary[], operations: Operation[]): TraceDetail {
+function detail(
+  captureId: string,
+  captures: TraceSummary[],
+  operations: Operation[],
+  share: Share | null = null,
+): TraceDetail {
   const capture = captures.find((item) => item.trace_id === captureId);
   if (!capture) throw new LocalApiError(404, 'capture_not_found', 'Trace not found');
   return {
@@ -530,7 +536,7 @@ function detail(captureId: string, captures: TraceSummary[], operations: Operati
         : []),
     ],
     notarization: operations.find((operation) => operation.trace_id === capture.trace_id) ?? null,
-    share: null,
+    share,
   };
 }
 
@@ -669,8 +675,14 @@ function traceForCapture(capture: TraceSummary): TraceContent {
 
 export function createFixtureApi({
   nowUnixMs = Date.now(),
+  initialShare,
 }: {
   nowUnixMs?: number;
+  initialShare?: {
+    traceId: string;
+    visibility: ShareVisibility;
+    accessEnabled: boolean;
+  };
 } = {}): LocalApi {
   const clock = Number.isFinite(nowUnixMs) && nowUnixMs > 0 ? nowUnixMs : Date.now();
   const offset = clock - fixtureNow;
@@ -726,14 +738,27 @@ export function createFixtureApi({
   let nextEventId = Math.max(...events.map((event) => event.event_id)) + 1;
   let nextActionTime = clock;
   let captureEnabled = fixtureStatus.capture_enabled;
+  const progressingOperations = new Set<string>();
+  const operationPolls = new Map<string, number>();
   const shares = new Map<
     string,
     {
       captureId: string;
       progress: 'preparing' | 'verifying' | 'shared';
       visibility: ShareVisibility;
+      accessEnabled: boolean;
+      updatedAt: number;
     }
   >();
+  if (initialShare) {
+    shares.set('share-fixture', {
+      captureId: initialShare.traceId,
+      progress: 'shared',
+      visibility: initialShare.visibility,
+      accessEnabled: initialShare.accessEnabled,
+      updatedAt: clock,
+    });
+  }
   const actionTimestamp = () => {
     nextActionTime += 1000;
     return nextActionTime;
@@ -777,6 +802,111 @@ export function createFixtureApi({
         : capture,
     );
   };
+  const advanceFixtureOperation = (operationId: string) => {
+    if (!progressingOperations.has(operationId)) return;
+    const polls = operationPolls.get(operationId) ?? 0;
+    operationPolls.set(operationId, polls + 1);
+    if (polls === 0) return;
+    const operation = operations.find((item) => item.operation_id === operationId);
+    if (!operation?.trace_id) {
+      progressingOperations.delete(operationId);
+      return;
+    }
+    if (operation.state === 'queued') {
+      const attempt = operation.attempt + 1;
+      const startedAt = actionTimestamp();
+      operations = operations.map((item) =>
+        item.operation_id === operationId
+          ? {
+              ...item,
+              state: 'running',
+              attempt,
+              started_at_unix_ms: startedAt,
+              completed_at_unix_ms: null,
+              progress: proofProgress(384_000, 1_120_000, 3, 9, startedAt),
+              retryable: false,
+              attempt_history: [
+                { attempt, state: 'running', started_at_unix_ms: startedAt },
+                ...item.attempt_history,
+              ],
+            }
+          : item,
+      );
+      setCaptureNotarization(operation.trace_id, 'running');
+      recordEvent(
+        'notarization_started',
+        'Notarization started',
+        'info',
+        operation.trace_id,
+        operationId,
+      );
+      return;
+    }
+    if (operation.state !== 'running') return;
+    const completedAt = actionTimestamp();
+    operations = operations.map((item) =>
+      item.operation_id === operationId
+        ? {
+            ...item,
+            state: 'succeeded',
+            completed_at_unix_ms: completedAt,
+            progress: {
+              ...item.progress,
+              phase: 'complete',
+              updated_at_unix_ms: completedAt,
+              proof: item.progress.proof
+                ? {
+                    ...item.progress.proof,
+                    bytes_completed: item.progress.proof.bytes_total,
+                    commitments_completed: item.progress.proof.commitments_total,
+                  }
+                : null,
+            },
+            retryable: false,
+            attempt_history: item.attempt_history.map((attempt, index) =>
+              index === 0
+                ? { ...attempt, state: 'succeeded', completed_at_unix_ms: completedAt }
+                : attempt,
+            ),
+          }
+        : item,
+    );
+    setCaptureNotarization(operation.trace_id, 'succeeded');
+    const capture = captures.find((item) => item.trace_id === operation.trace_id);
+    if (capture) traces.set(capture.trace_id, traceForCapture(capture));
+    recordEvent(
+      'notarization_completed',
+      'Notarization completed',
+      'success',
+      operation.trace_id,
+      operationId,
+    );
+    progressingOperations.delete(operationId);
+    operationPolls.delete(operationId);
+  };
+  const fixtureShare = (
+    shareId: string,
+    share: {
+      captureId: string;
+      progress: 'preparing' | 'verifying' | 'shared';
+      visibility: ShareVisibility;
+      accessEnabled: boolean;
+      updatedAt: number;
+    },
+  ): Share => ({
+    trace_id: share.captureId,
+    progress: share.progress,
+    visibility: share.visibility,
+    access_enabled: share.accessEnabled,
+    password_protected: false,
+    updated_at_unix_ms: share.updatedAt,
+    failure_code: null,
+    share_url: share.progress === 'shared' ? `https://notary.example/traces/${shareId}` : null,
+    package_url:
+      share.progress === 'shared'
+        ? `https://notary.example/api/public/traces/${shareId}/package.llmtrace`
+        : null,
+  });
   const status = (): Status => ({
     ...fixtureStatus,
     capture_enabled: captureEnabled,
@@ -785,7 +915,9 @@ export function createFixtureApi({
       notarizing: captures.filter((capture) => capture.status === 'notarizing').length,
       notarized: captures.filter((capture) => capture.state === 'notarized').length,
       needs_attention: captures.filter((capture) =>
-        ['notarization_failed', 'notarization_interrupted'].includes(capture.status ?? ''),
+        ['capture_failed', 'notarization_failed', 'notarization_interrupted'].includes(
+          capture.status ?? '',
+        ),
       ).length,
       capturing: captures.filter((capture) => capture.status === 'capturing').length,
       capture_failed: captures.filter((capture) => capture.status === 'capture_failed').length,
@@ -816,7 +948,12 @@ export function createFixtureApi({
               .includes(term),
           )) &&
         (!state || capture.state === state) &&
-        (!status || capture.status === status) &&
+        (!status ||
+          capture.status === status ||
+          (status === 'needs_attention' &&
+            ['capture_failed', 'notarization_failed', 'notarization_interrupted'].includes(
+              capture.status ?? '',
+            ))) &&
         (!provider || capture.provider === provider) &&
         (!model || capture.requested_model === model) &&
         (streaming == null || capture.streaming === streaming) &&
@@ -871,7 +1008,19 @@ export function createFixtureApi({
       const next = start + items.length;
       return { items, next_cursor: next < all.length ? cursor('captures', next) : null };
     },
-    trace: async (captureId) => detail(captureId, captures, operations),
+    trace: async (captureId) => {
+      const operation = operations.find((item) => item.trace_id === captureId);
+      if (operation && progressingOperations.has(operation.operation_id)) {
+        advanceFixtureOperation(operation.operation_id);
+      }
+      const share = [...shares.entries()].find(([, value]) => value.captureId === captureId);
+      return detail(
+        captureId,
+        captures,
+        operations,
+        share ? fixtureShare(share[0], share[1]) : null,
+      );
+    },
     startNotarization: async (captureId) => {
       const capture = captures.find((item) => item.trace_id === captureId);
       if (!capture) throw new LocalApiError(404, 'pending_capture_not_found', 'Trace not found');
@@ -899,6 +1048,8 @@ export function createFixtureApi({
               : operation,
           );
           setCaptureNotarization(captureId, 'queued');
+          operationPolls.delete(existing.operation_id);
+          progressingOperations.add(existing.operation_id);
           recordEvent(
             'notarization_queued',
             'Notarization retry queued',
@@ -927,6 +1078,7 @@ export function createFixtureApi({
       };
       operations = [operation, ...operations];
       setCaptureNotarization(captureId, 'queued');
+      progressingOperations.add(operation.operation_id);
       recordEvent(
         'notarization_queued',
         'Notarization queued',
@@ -1010,39 +1162,25 @@ export function createFixtureApi({
       if (!traces.has(captureId))
         throw new LocalApiError(404, 'notarized_trace_not_found', 'Notarized trace not found');
       const shareId = 'share-fixture';
-      shares.set(shareId, { captureId, progress: 'preparing', visibility });
-      return {
-        trace_id: captureId,
-        progress: 'preparing',
+      const share = {
+        captureId,
+        progress: 'preparing' as const,
         visibility,
-        access_enabled: true,
-        password_protected: false,
-        updated_at_unix_ms: actionTimestamp(),
-        share_url: null,
-        package_url: null,
+        accessEnabled: true,
+        updatedAt: actionTimestamp(),
       };
+      shares.set(shareId, share);
+      return fixtureShare(shareId, share);
     },
     shareStatus: async (captureId) => {
       const entry = [...shares.entries()].find(([, share]) => share.captureId === captureId);
       if (!entry) throw new LocalApiError(404, 'share_not_found', 'Share not found');
       const [shareId, share] = entry;
-      const progress = share.progress;
-      if (progress === 'preparing') share.progress = 'verifying';
-      else if (progress === 'verifying') share.progress = 'shared';
-      return {
-        trace_id: captureId,
-        progress,
-        visibility: share.visibility,
-        access_enabled: true,
-        password_protected: false,
-        updated_at_unix_ms: actionTimestamp(),
-        failure_code: null,
-        share_url: progress === 'shared' ? `https://notary.example/traces/${shareId}` : null,
-        package_url:
-          progress === 'shared'
-            ? `https://notary.example/api/public/traces/${shareId}/package.llmtrace`
-            : null,
-      };
+      const result = fixtureShare(shareId, share);
+      if (share.progress === 'preparing') share.progress = 'verifying';
+      else if (share.progress === 'verifying') share.progress = 'shared';
+      share.updatedAt = actionTimestamp();
+      return result;
     },
     stopSharing: async (captureId) => {
       const entry = [...shares.entries()].find(([, share]) => share.captureId === captureId);

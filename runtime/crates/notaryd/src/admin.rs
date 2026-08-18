@@ -2562,6 +2562,7 @@ impl TraceState {
 enum TraceOperationalStatus {
     Capturing,
     CaptureFailed,
+    NeedsAttention,
     Notarizing,
     NotarizationFailed,
     NotarizationInterrupted,
@@ -2572,6 +2573,7 @@ impl TraceOperationalStatus {
         match self {
             Self::Capturing => "capturing",
             Self::CaptureFailed => "capture_failed",
+            Self::NeedsAttention => "needs_attention",
             Self::Notarizing => "notarizing",
             Self::NotarizationFailed => "notarization_failed",
             Self::NotarizationInterrupted => "notarization_interrupted",

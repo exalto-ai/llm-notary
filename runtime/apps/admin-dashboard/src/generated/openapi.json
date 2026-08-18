@@ -2751,6 +2751,7 @@
         "enum": [
           "capturing",
           "capture_failed",
+          "needs_attention",
           "notarizing",
           "notarization_failed",
           "notarization_interrupted"

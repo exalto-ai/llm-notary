@@ -405,6 +405,9 @@ impl SqliteMetadata {
         match filters.status.as_deref() {
             Some("capturing") => sql.push_str(" AND c.capture_status = 'capturing'"),
             Some("capture_failed") => sql.push_str(" AND c.capture_status = 'failed'"),
+            Some("needs_attention") => sql.push_str(
+                " AND (c.capture_status = 'failed' OR (c.capture_status = 'captured' AND c.notarization_status IN ('failed', 'interrupted')))",
+            ),
             Some("notarizing") => sql.push_str(
                 " AND c.capture_status = 'captured' AND c.notarization_status IN ('queued', 'running')",
             ),

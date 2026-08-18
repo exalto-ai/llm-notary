@@ -701,7 +701,7 @@ export interface components {
             share: null | components["schemas"]["TraceShare"];
         };
         /** @enum {string} */
-        TraceOperationalStatus: "capturing" | "capture_failed" | "notarizing" | "notarization_failed" | "notarization_interrupted";
+        TraceOperationalStatus: "capturing" | "capture_failed" | "needs_attention" | "notarizing" | "notarization_failed" | "notarization_interrupted";
         TracePage: {
             items: components["schemas"]["TraceSummary"][];
             next_cursor?: string | null;
