@@ -33,13 +33,13 @@ import { AccountSettings, ApiKeysPanel, Dashboard, DeleteAccountPanel } from './
 import {
   DeviceAuthorizationApproval,
   HostedNotaryRecord,
-  NotariesPage,
+  RegistryPage,
 } from './AuthorizationPages';
 import { Docs } from './PublicDocs';
 import {
-  Library,
   ListedTracesPreview,
   PublicTracePage,
+  PublicTraces,
   VerificationPage,
 } from './PublicTracePages';
 
@@ -345,6 +345,9 @@ export function Header({
         <PenMark /> <span>Notary</span>
       </a>
       <nav className="product-nav">
+        <a href="/#/traces">Traces</a>
+        <a href="/#/verify">Verify</a>
+        <a href="/#/registry">Registry</a>
         <a href="/#/docs">Docs</a>
         <a href="/#/pricing">Pricing</a>
         {user ? (
@@ -520,8 +523,8 @@ export function Footer() {
       </span>
       <nav aria-label="Footer">
         <a href="/#/verify">Verify</a>
-        <a href="/#/library">Library</a>
-        <a href="/#/notaries">Notaries</a>
+        <a href="/#/traces">Traces</a>
+        <a href="/#/registry">Registry</a>
         <a href="/#/privacy">Privacy</a>
         <a href="/#/terms">Terms</a>
       </nav>
@@ -558,7 +561,7 @@ const legalPages = {
       ],
       [
         'Your choices',
-        'You choose whether a shared session is Unlisted or Listed. Both start accessible to anyone with the link; Unlisted only keeps it out of the Library. After admission, you can unpublish it, require a password, or set an expiry. Keep private capture bundles and credentials under your control. For privacy questions or requests, contact the Notary operator through the project’s support channel.',
+        'You choose whether a shared Trace is Unlisted or Listed. Both start accessible to anyone with the link; Unlisted only keeps it out of public Traces. After admission, you can stop sharing, require a password, or set an expiry. Keep private capture checkpoints and credentials under your control. For privacy questions or requests, contact the Notary operator through the project’s support channel.',
       ],
       [
         'Updates',
@@ -578,7 +581,7 @@ const legalPages = {
       ],
       [
         'Your shared sessions',
-        'You are responsible for every package you choose to submit. Sharing is an explicit consent boundary: once admitted, its disclosed conversation and exact package can be accessed by anyone with the link. Unlisted is not private; it only keeps the session out of the Library.',
+        'You are responsible for every package you choose to submit. Sharing is an explicit consent boundary: once admitted, its disclosed conversation and exact package can be accessed by anyone with the link. Unlisted is not private; it only keeps the Trace out of public Traces.',
       ],
       [
         'What verification means',
@@ -821,7 +824,7 @@ export function Landing({ loadLatestPointer: loadPointer = loadLatestPointer }) 
             <PenMark />
             <b>Portable package</b>
           </header>
-          <h3>Verified</h3>
+          <h3>Verification passed</h3>
           <dl>
             <div>
               <dt>Provider</dt>
@@ -863,9 +866,10 @@ export {
   DeleteAccountPanel,
   DeviceAuthorizationApproval,
   HostedNotaryRecord,
-  Library,
   ListedTracesPreview,
   PublicTracePage,
+  PublicTraces,
+  RegistryPage,
   VerificationPage,
 };
 
@@ -974,21 +978,19 @@ export function App({
   const routeQuery = path.includes('?') ? `?${path.split('?').slice(1).join('?')}` : '';
   const canonicalPath = `${section}${page ? `/${page}` : ''}${routeQuery}`;
   const sectionAnchor = new URLSearchParams(path.split('?')[1] || '').get('section');
-  const isLibrary = section === 'library' || section === 'traces' || section === 'collections';
+  const isPublicTraces = section === 'traces';
   const accountLoading = section === 'account' && authPending;
   useEffect(() => {
     const titles: Record<string, string> = {
       authorize: 'Connect device',
       account: 'Account',
       docs: 'Docs',
-      library: 'Library',
-      collections: 'Library',
-      notaries: 'Registry',
+      registry: 'Registry',
       pricing: 'Pricing',
       privacy: 'Privacy',
       signin: 'Sign in',
       terms: 'Terms',
-      traces: 'Library',
+      traces: 'Traces',
       verify: 'Verify',
     };
     const accountTitle =
@@ -1024,10 +1026,10 @@ export function App({
         <VerificationPage />
       ) : section === 'docs' ? (
         <Docs pageKey={page || 'overview'} section={sectionAnchor ?? undefined} />
-      ) : isLibrary ? (
-        <Library />
-      ) : section === 'notaries' ? (
-        <NotariesPage />
+      ) : isPublicTraces ? (
+        <PublicTraces />
+      ) : section === 'registry' ? (
+        <RegistryPage />
       ) : accountLoading ? (
         <DashboardAuthLoading />
       ) : section === 'account' && user ? (
@@ -1049,7 +1051,7 @@ export function App({
       ) : (
         <Landing />
       )}
-      {!isLibrary && !accountLoading && <Footer />}
+      {!isPublicTraces && !accountLoading && <Footer />}
     </>
   );
 }

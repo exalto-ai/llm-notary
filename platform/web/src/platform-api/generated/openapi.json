@@ -2254,6 +2254,16 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "shared_after",
+            "in": "query",
+            "description": "Include traces shared at or after this Unix timestamp",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
           }
         ],
         "responses": {
@@ -5061,6 +5071,13 @@
                 "publisher": {
                   "type": "string"
                 },
+                "shared_at": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "int64"
+                },
                 "title": {
                   "type": [
                     "string",
@@ -5214,6 +5231,18 @@
               "null"
             ]
           },
+          "notary_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "notary_operator": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "package_sha256": {
             "type": "string"
           },
@@ -5314,6 +5343,13 @@
           },
           "publisher": {
             "type": "string"
+          },
+          "shared_at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
           },
           "title": {
             "type": [

@@ -1224,6 +1224,8 @@ export interface components {
                 provider: string;
                 public_url: string;
                 publisher: string;
+                /** Format: int64 */
+                shared_at?: number | null;
                 title?: string | null;
                 trace_id: string;
             }[];
@@ -1264,6 +1266,8 @@ export interface components {
             model: string;
             notarized_state: string;
             notary_key_id?: string | null;
+            notary_name?: string | null;
+            notary_operator?: string | null;
             package_sha256: string;
             /** Format: int64 */
             package_size_bytes: number;
@@ -1292,6 +1296,8 @@ export interface components {
             provider: string;
             public_url: string;
             publisher: string;
+            /** Format: int64 */
+            shared_at?: number | null;
             title?: string | null;
             trace_id: string;
         };
@@ -2998,6 +3004,8 @@ export interface operations {
                 cursor?: string;
                 search?: string;
                 provider?: string;
+                /** @description Include traces shared at or after this Unix timestamp */
+                shared_after?: number;
             };
             header?: never;
             path?: never;

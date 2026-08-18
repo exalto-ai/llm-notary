@@ -135,7 +135,7 @@ struct ListedTraceRow {
     input_preview: Option<String>,
     output_preview: Option<String>,
     password_protected: bool,
-    page_authenticated_at_unix_ms: i64,
+    shared_at: i64,
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -144,11 +144,12 @@ struct PublicTracesQuery {
     cursor: Option<String>,
     search: Option<String>,
     provider: Option<String>,
+    shared_after: Option<i64>,
 }
 
 #[derive(Deserialize, Serialize)]
 struct PublicTracePagePosition {
-    authenticated_at_unix_ms: i64,
+    shared_at: i64,
     id: String,
 }
 
@@ -159,6 +160,7 @@ struct PublicTraceSummary {
     provider: String,
     model: String,
     publisher: String,
+    shared_at: Option<i64>,
     authenticated_at_unix_ms: Option<i64>,
     input_preview: Option<String>,
     output_preview: Option<String>,
@@ -182,6 +184,8 @@ struct PublicTraceDetail {
     notarized_state: &'static str,
     hosted_verification: &'static str,
     notary_key_id: Option<String>,
+    notary_name: Option<String>,
+    notary_operator: Option<String>,
     registry_generation: Option<i64>,
     trust_source: Option<String>,
     content_sha256: String,
@@ -258,7 +262,7 @@ pub fn router() -> OpenApiRouter<NotaryApiState> {
     get,
     path = "/api/public/traces",
     summary = "List Listed verified-session traces",
-    params(("limit" = Option<u32>, Query, description = "Page size; defaults to 50", minimum = 1, maximum = 100), ("cursor" = Option<String>, Query), ("search" = Option<String>, Query), ("provider" = Option<String>, Query)),
+    params(("limit" = Option<u32>, Query, description = "Page size; defaults to 50", minimum = 1, maximum = 100), ("cursor" = Option<String>, Query), ("search" = Option<String>, Query), ("provider" = Option<String>, Query), ("shared_after" = Option<i64>, Query, description = "Include traces shared at or after this Unix timestamp")),
     responses(
         (status = 200, body = Page<PublicTraceSummary>),
         (status = 400, body = crate::ErrorResponse),
@@ -274,6 +278,12 @@ async fn list_public_traces(
     let search = normalize_trace_search(query.search)?;
     let search_pattern = search.as_deref().map(public_trace_search_regex);
     let provider = normalize_trace_filter(query.provider, 100, "provider is too long")?;
+    let shared_after = match query.shared_after {
+        Some(value) if value < 0 => {
+            return Err(ApiError::bad_request("shared_after must not be negative"));
+        }
+        value => value,
+    };
     let page_query = PageQuery {
         limit: query.limit,
         cursor: query.cursor,
@@ -283,8 +293,8 @@ async fn list_public_traces(
         .map_err(pagination::api_error)?;
     let scope = CursorScope::new(
         "/api/public/traces",
-        &(&search, &provider),
-        "authenticated_provider_connection_unix_ms desc nulls last, trace_id desc",
+        &(&search, &provider, shared_after),
+        "shared_at desc, trace_id desc",
     )
     .map_err(pagination::api_error)?;
     let position = page_query
@@ -302,10 +312,7 @@ async fn list_public_traces(
                 CASE WHEN traces.access_password_hash IS NULL
                      THEN traces.output_preview END AS output_preview,
                 traces.access_password_hash IS NOT NULL AS password_protected,
-                COALESCE(
-                    traces.authenticated_provider_connection_unix_ms,
-                    '-9223372036854775808'::BIGINT
-                ) AS page_authenticated_at_unix_ms
+                traces.verified_at AS shared_at
          FROM traces
          JOIN accounts ON accounts.account_id = traces.account_id
          WHERE traces.status = 'shared'
@@ -323,31 +330,23 @@ async fn list_public_traces(
                 traces.access_password_hash IS NOT NULL
                 AND 'shared trace notary by exalto' ~* $2
            ))
-           AND ($3::TEXT IS NULL OR (
-                COALESCE(
-                    traces.authenticated_provider_connection_unix_ms,
-                    '-9223372036854775808'::BIGINT
-                ), traces.trace_id
-           ) < ($4, $3))
-         ORDER BY traces.authenticated_provider_connection_unix_ms DESC NULLS LAST,
-                  traces.trace_id DESC
-         LIMIT $5",
+           AND ($3::BIGINT IS NULL OR traces.verified_at >= $3)
+           AND ($4::TEXT IS NULL OR (traces.verified_at, traces.trace_id) < ($5, $4))
+         ORDER BY traces.verified_at DESC, traces.trace_id DESC
+         LIMIT $7",
     )
     .bind(&provider)
     .bind(&search_pattern)
+    .bind(shared_after)
     .bind(position.as_ref().map(|position| &position.id))
-    .bind(
-        position
-            .as_ref()
-            .map(|position| position.authenticated_at_unix_ms),
-    )
-    .bind(i64::try_from(limit + 1).map_err(|error| ApiError::internal(error.into()))?)
+    .bind(position.as_ref().map(|position| position.shared_at))
     .bind(unix_timestamp()?)
+    .bind(i64::try_from(limit + 1).map_err(|error| ApiError::internal(error.into()))?)
     .fetch_all(&state.database)
     .await
     .map_err(database_error)?;
     let page = Page::from_limit_plus_one(rows, limit, &scope, |trace| PublicTracePagePosition {
-        authenticated_at_unix_ms: trace.page_authenticated_at_unix_ms,
+        shared_at: trace.shared_at,
         id: trace.id.clone(),
     })
     .map_err(pagination::api_error)?;
@@ -375,6 +374,7 @@ async fn list_public_traces(
                 } else {
                     trace.publisher
                 },
+                shared_at: (!protected).then_some(trace.shared_at),
                 authenticated_at_unix_ms: (!protected)
                     .then_some(trace.authenticated_provider_connection_unix_ms)
                     .flatten(),
@@ -460,6 +460,15 @@ async fn public_trace_detail(
     Path(trace_id): Path<String>,
 ) -> ApiResult<Response> {
     let trace = load_public_trace(&state, &jar, &trace_id).await?;
+    let notary = trace.verified_notary_key_id.as_ref().and_then(|key_id| {
+        state
+            .registry
+            .notaries
+            .iter()
+            .find(|record| &record.key_id == key_id)
+    });
+    let notary_name = notary.map(|record| record.name.clone());
+    let notary_operator = notary.map(|record| record.operator.clone());
     let (package_size_bytes, package_sha256, safety_version) = {
         let (_, size, sha256, safety_version) = public_package_metadata(&trace)?;
         (size, sha256.to_owned(), safety_version.to_owned())
@@ -479,6 +488,8 @@ async fn public_trace_detail(
         notarized_state: "notarized",
         hosted_verification: "passed",
         notary_key_id: trace.verified_notary_key_id,
+        notary_name,
+        notary_operator,
         registry_generation: trace.verified_registry_generation,
         trust_source: trace.verified_trust_source,
         content_sha256: trace.content_sha256,
@@ -1148,6 +1159,7 @@ mod tests {
         id: &str,
         visibility: &str,
         provider: &str,
+        shared_at: i64,
         authenticated_at: Option<i64>,
         search_text: &str,
     ) {
@@ -1165,10 +1177,10 @@ mod tests {
              ) VALUES (
                  $1, 'public-trace-user', $1 || '-source', $1 || '-key', 'shared', $2,
                  1, $3, $1 || '-upload', $1 || '-intake', 10, 1, 1,
-                 1, 1, $3, $1 || '-trace', 1, $4, $5,
+                 $8, 1, $3, $1 || '-trace', 1, $4, $5,
                  $1 || '-package', 1, $6, 'notary/public-package-safety/v1',
-                 $7, $7 || '.example.com', 'model-' || $1, $8,
-                 'input ' || $1, 'output ' || $1, $9
+                 $7, $7 || '.example.com', 'model-' || $1, $9,
+                 'input ' || $1, 'output ' || $1, $10
              )",
         )
         .bind(id)
@@ -1178,6 +1190,7 @@ mod tests {
         .bind(visibility)
         .bind("c".repeat(64))
         .bind(provider)
+        .bind(shared_at)
         .bind(authenticated_at)
         .bind(search_text)
         .execute(pool)
@@ -1195,6 +1208,7 @@ mod tests {
             "trace-c",
             "listed",
             "openai",
+            100,
             Some(100),
             "openai publisher 100%_safe! prompt",
         )
@@ -1204,6 +1218,7 @@ mod tests {
             "trace-b",
             "listed",
             "openai",
+            100,
             Some(100),
             "openai publisher 100xxsafe prompt",
         )
@@ -1213,6 +1228,7 @@ mod tests {
             "trace-a",
             "listed",
             "anthropic",
+            90,
             Some(90),
             "anthropic publisher",
         )
@@ -1222,6 +1238,7 @@ mod tests {
             "trace-null",
             "listed",
             "openai",
+            80,
             None,
             "openai publisher without timestamp",
         )
@@ -1231,6 +1248,7 @@ mod tests {
             "hidden",
             "unlisted",
             "openai",
+            95,
             Some(95),
             "openai publisher hidden",
         )
@@ -1244,6 +1262,7 @@ mod tests {
                 cursor: None,
                 search: None,
                 provider: None,
+                shared_after: None,
             })),
         )
         .await
@@ -1264,6 +1283,7 @@ mod tests {
             "trace-new",
             "listed",
             "openai",
+            200,
             Some(200),
             "openai publisher inserted later",
         )
@@ -1275,6 +1295,7 @@ mod tests {
                 cursor: Some(cursor),
                 search: None,
                 provider: None,
+                shared_after: None,
             })),
         )
         .await
@@ -1297,6 +1318,7 @@ mod tests {
                 cursor: None,
                 search: Some("100%_safe!".to_owned()),
                 provider: None,
+                shared_after: None,
             })),
         )
         .await
@@ -1305,6 +1327,23 @@ mod tests {
         assert_eq!(literal_search.items.len(), 1);
         assert_eq!(literal_search.items[0].trace_id, "trace-c");
 
+        let recent = list_public_traces(
+            State(state.clone()),
+            Ok(Query(PublicTracesQuery {
+                limit: None,
+                cursor: None,
+                search: None,
+                provider: None,
+                shared_after: Some(150),
+            })),
+        )
+        .await
+        .unwrap()
+        .0;
+        assert_eq!(recent.items.len(), 1);
+        assert_eq!(recent.items[0].trace_id, "trace-new");
+        assert_eq!(recent.items[0].shared_at, Some(200));
+
         let provider_filter = list_public_traces(
             State(state),
             Ok(Query(PublicTracesQuery {
@@ -1312,6 +1351,7 @@ mod tests {
                 cursor: None,
                 search: None,
                 provider: Some("ANTHROPIC".to_owned()),
+                shared_after: None,
             })),
         )
         .await
@@ -1331,6 +1371,7 @@ mod tests {
             "trace-public",
             "listed",
             "openai",
+            100,
             Some(100),
             "openai public prompt",
         )
@@ -1340,6 +1381,7 @@ mod tests {
             "trace-protected",
             "listed",
             "secret-provider",
+            200,
             Some(200),
             "secret-provider private prompt",
         )
@@ -1359,6 +1401,7 @@ mod tests {
                 cursor: None,
                 search: None,
                 provider: None,
+                shared_after: None,
             })),
         )
         .await
@@ -1373,6 +1416,7 @@ mod tests {
         assert_eq!(protected.model, "Shared trace");
         assert_eq!(protected.publisher, "Notary by Exalto");
         assert!(protected.title.is_none());
+        assert!(protected.shared_at.is_none());
         assert!(protected.authenticated_at_unix_ms.is_none());
         assert!(protected.input_preview.is_none());
         assert!(protected.output_preview.is_none());
@@ -1384,6 +1428,7 @@ mod tests {
                 cursor: None,
                 search: None,
                 provider: Some("secret-provider".to_owned()),
+                shared_after: None,
             })),
         )
         .await
@@ -1398,6 +1443,7 @@ mod tests {
                 cursor: None,
                 search: Some("private prompt".to_owned()),
                 provider: None,
+                shared_after: None,
             })),
         )
         .await
@@ -1416,6 +1462,7 @@ mod tests {
             "trace-protected",
             "unlisted",
             "openai",
+            100,
             Some(100),
             "openai private prompt",
         )
@@ -1594,10 +1641,11 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn unlisted_artifacts_are_noindex_but_still_downloadable() {
+    #[tokio::test]
+    async fn unlisted_artifacts_are_noindex_and_export_exact_bytes() {
+        let package = b"exact admitted package bytes".to_vec();
         let response = public_bytes(
-            b"package".to_vec(),
+            package.clone(),
             crate::traces::storage::ARCHIVE_CONTENT_TYPE,
             &"a".repeat(64),
             Some("trc-test.llmtrace"),
@@ -1616,6 +1664,10 @@ mod tests {
             response.headers().get(header::CACHE_CONTROL).unwrap(),
             "private, no-store"
         );
+        let body = axum::body::to_bytes(response.into_body(), package.len())
+            .await
+            .unwrap();
+        assert_eq!(body.as_ref(), package.as_slice());
     }
 
     #[test]

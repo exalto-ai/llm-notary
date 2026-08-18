@@ -108,23 +108,23 @@ export function ListedTracesPreview({
       </div>
       {shares === null && !loadError ? (
         <div className="collection-pending" role="status">
-          <b>Loading the Library…</b>
+          <b>Loading public Traces…</b>
           <span>Finding the latest public traces.</span>
         </div>
       ) : loadError ? (
         <div className="collection-pending" role="alert">
-          <b>The Library couldn’t load.</b>
-          <span>Open the Library to try again.</span>
+          <b>Public Traces couldn’t load.</b>
+          <span>Open Traces to try again.</span>
         </div>
       ) : visible.length ? (
         <section className="preview-share-list" aria-label="Featured public traces">
           {visible.map((share) => (
             <a href={`/s/${encodeURIComponent(share.trace_id)}`} key={share.trace_id}>
               <header>
-                <b>{share.model}</b>
+                <b>{share.title || 'Shared Notarized trace'}</b>
                 <ProviderIdentity
                   provider={share.provider}
-                  detail={`shared by ${share.publisher}`}
+                  detail={`${share.model} · shared by ${share.publisher}`}
                 />
               </header>
               {share.password_protected ? (
@@ -148,12 +148,12 @@ export function ListedTracesPreview({
         </section>
       ) : (
         <div className="collection-pending">
-          <b>The Library is empty.</b>
-          <span>Public traces will appear here after they’re shared.</span>
+          <b>No traces have been shared publicly yet.</b>
+          <span>Listed Notarized traces will appear here after they’re shared.</span>
         </div>
       )}
-      <a className="button button-dark" href="#/library">
-        Browse the Library
+      <a className="button button-dark" href="#/traces">
+        Browse Traces
       </a>
     </section>
   );
@@ -298,7 +298,13 @@ export function VerificationPage({
       setStatus('success');
     } catch (error) {
       if (requestGeneration.current !== generation) return;
-      setErrorCode(error instanceof Error ? error.message : 'verification_unavailable');
+      setErrorCode(
+        error instanceof PlatformApiError
+          ? error.code || 'verification_unavailable'
+          : error instanceof Error
+            ? error.message
+            : 'verification_unavailable',
+      );
       setStatus('error');
     }
   };
@@ -325,7 +331,8 @@ export function VerificationPage({
         <h1>Verify a .llmtrace package.</h1>
         <p>
           Check the authenticated provider exchange, notary signature, artifact hashes, and
-          normalized OpenTelemetry trace without signing in.
+          disclosed OpenTelemetry content without signing in. Temporary processing retains no
+          package or trace and does not create, store, publish, or share anything.
         </p>
       </header>
       {!completed && (
@@ -364,6 +371,7 @@ export function VerificationPage({
             <input
               ref={inputRef}
               type="file"
+              accept=".llmtrace,application/vnd.exalto.notary.trace-package+zip"
               onChange={(event) => chooseFile(event.currentTarget.files?.[0] || null)}
             />
             <span>{file ? 'Package selected' : 'Drop one .llmtrace package here'}</span>
@@ -421,7 +429,7 @@ export function VerificationPage({
                   <h2 id="verification-success-title">Verification passed.</h2>
                 </div>
                 <div className="verification-result-actions">
-                  <strong>Verified</strong>
+                  <strong>Passed</strong>
                   <button type="button" className="button" onClick={resetVerification}>
                     Verify another package
                   </button>
@@ -701,13 +709,13 @@ function parsePublicTraceOtlp(trace: PublicTraceOtlp | VerificationResult['trace
   });
 }
 
-function LibraryLoading() {
+function PublicTracesLoading() {
   return (
     <main className="share-library share-library--loading" aria-busy="true">
       <header className="share-library-titlebar">
-        <h1>Library</h1>
+        <h1>Traces</h1>
       </header>
-      <div className="share-library-skeleton" role="status" aria-label="Loading the Library">
+      <div className="share-library-skeleton" role="status" aria-label="Loading public Traces">
         {[1, 2, 3].map((row) => (
           <div key={row}>
             <i />
@@ -722,16 +730,8 @@ function LibraryLoading() {
   );
 }
 
-function formatLibraryDate(unixMilliseconds?: number | null) {
-  if (!unixMilliseconds) return null;
-  const date = new Date(unixMilliseconds);
-  if (Number.isNaN(date.valueOf())) return null;
-  return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium' }).format(date);
-}
-
-function LibraryShareRow({ share }: { share: ListedTrace }) {
-  const captureDate = formatLibraryDate(share.authenticated_at_unix_ms);
-  const authenticatedAt = share.authenticated_at_unix_ms;
+function PublicTraceRow({ share }: { share: ListedTrace }) {
+  const sharedDate = share.shared_at ? sessionDate(share.shared_at) : null;
   const inputPreview = share.input_preview;
   const outputPreview = share.output_preview;
   return (
@@ -741,17 +741,16 @@ function LibraryShareRow({ share }: { share: ListedTrace }) {
     >
       <header>
         <div className="share-index-heading">
-          <b>{share.model}</b>
+          <b>{share.title || 'Shared Notarized trace'}</b>
           <small>
             <ProviderIdentity provider={share.provider} detail={`shared by ${share.publisher}`} />
-            {captureDate && authenticatedAt && (
-              <time dateTime={new Date(authenticatedAt).toISOString()}>{captureDate}</time>
+            <span>{share.model}</span>
+            {sharedDate && share.shared_at && (
+              <time dateTime={new Date(share.shared_at * 1000).toISOString()}>{sharedDate}</time>
             )}
           </small>
         </div>
-        <span className="share-index-open">
-          {share.password_protected ? 'Open protected trace' : 'Open trace'}
-        </span>
+        <span className="share-index-open">Notarized · Open trace</span>
       </header>
       {share.password_protected ? (
         <p className="share-index-protected">
@@ -780,7 +779,11 @@ function LibraryShareRow({ share }: { share: ListedTrace }) {
   );
 }
 
-export function Library({ loadShares = getListedTraces }: { loadShares?: typeof getListedTraces }) {
+export function PublicTraces({
+  loadShares = getListedTraces,
+}: {
+  loadShares?: typeof getListedTraces;
+}) {
   const [shares, setShares] = useState<ListedTrace[] | null>(null);
   const [loadingPage, setLoadingPage] = useState(true);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
@@ -788,6 +791,8 @@ export function Library({ loadShares = getListedTraces }: { loadShares?: typeof 
   const [loadError, setLoadError] = useState('');
   const [query, setQuery] = useState('');
   const [provider, setProvider] = useState('All');
+  const [dateRange, setDateRange] = useState('all');
+  const [sharedAfter, setSharedAfter] = useState<number | null>(null);
   const [reload, setReload] = useState(0);
   const requestGeneration = useRef(0);
   const normalizedQuery = query.trim();
@@ -811,6 +816,18 @@ export function Library({ loadShares = getListedTraces }: { loadShares?: typeof 
     setLoadError('');
     setProvider(value);
   };
+  const changeDateRange = (value: string) => {
+    requestGeneration.current += 1;
+    setLoadingMore(false);
+    setNextCursor(null);
+    setShares([]);
+    setLoadingPage(true);
+    setLoadError('');
+    setDateRange(value);
+    setSharedAfter(
+      value === 'all' ? null : Math.floor(Date.now() / 1000) - Number(value) * 24 * 60 * 60,
+    );
+  };
   useEffect(() => {
     let cancelled = false;
     const generation = requestGeneration.current + 1;
@@ -832,6 +849,7 @@ export function Library({ loadShares = getListedTraces }: { loadShares?: typeof 
         limit: 20,
         search: normalizedQuery || undefined,
         provider: provider === 'All' ? undefined : provider,
+        shared_after: sharedAfter ?? undefined,
       })
         .then((payload) => {
           if (!cancelled && generation === requestGeneration.current) {
@@ -843,7 +861,7 @@ export function Library({ loadShares = getListedTraces }: { loadShares?: typeof 
         .catch((error) => {
           if (!cancelled && generation === requestGeneration.current) {
             setShares(null);
-            setLoadError(error instanceof Error ? error.message : 'Could not load the Library.');
+            setLoadError(error instanceof Error ? error.message : 'Could not load public Traces.');
             setLoadingPage(false);
           }
         });
@@ -852,7 +870,7 @@ export function Library({ loadShares = getListedTraces }: { loadShares?: typeof 
       cancelled = true;
       window.clearTimeout(timeout);
     };
-  }, [loadShares, normalizedQuery, provider, queryIsNotIndexable, reload]);
+  }, [loadShares, normalizedQuery, provider, queryIsNotIndexable, reload, sharedAfter]);
   const providers = [
     'All',
     ...new Set([
@@ -860,7 +878,9 @@ export function Library({ loadShares = getListedTraces }: { loadShares?: typeof 
       'anthropic',
       'deepseek',
       'openrouter',
-      ...(shares || []).map((share) => share.provider),
+      ...(shares || [])
+        .map((share) => share.provider)
+        .filter((shareProvider) => shareProvider !== 'protected'),
     ]),
   ];
   const visibleShares = shares ?? [];
@@ -875,6 +895,7 @@ export function Library({ loadShares = getListedTraces }: { loadShares?: typeof 
         cursor: nextCursor,
         search: normalizedQuery || undefined,
         provider: provider === 'All' ? undefined : provider,
+        shared_after: sharedAfter ?? undefined,
       });
       if (generation !== requestGeneration.current) return;
       setShares((current) => [...(current || []), ...payload.items]);
@@ -886,13 +907,13 @@ export function Library({ loadShares = getListedTraces }: { loadShares?: typeof 
       if (generation === requestGeneration.current) setLoadingMore(false);
     }
   };
-  if (shares === null && !loadError) return <LibraryLoading />;
+  if (shares === null && !loadError) return <PublicTracesLoading />;
   return (
     <main className="share-library">
       <header className="share-library-titlebar">
-        <h1>Library</h1>
+        <h1>Traces</h1>
       </header>
-      <section className="share-library-controls" aria-label="Browse public sessions">
+      <section className="share-library-controls" aria-label="Browse public traces">
         <label htmlFor="library-search">
           <span>Search</span>
           <Input
@@ -912,6 +933,17 @@ export function Library({ loadShares = getListedTraces }: { loadShares?: typeof 
                 {value === 'All' ? 'All providers' : <ProviderIdentity provider={value} />}
               </SelectItem>
             ))}
+          </SelectContent>
+        </Select>
+        <Select value={dateRange} onValueChange={changeDateRange}>
+          <SelectTrigger aria-label="Date shared">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">Any time</SelectItem>
+            <SelectItem value="7">Past 7 days</SelectItem>
+            <SelectItem value="30">Past 30 days</SelectItem>
+            <SelectItem value="365">Past year</SelectItem>
           </SelectContent>
         </Select>
         <span>
@@ -938,7 +970,7 @@ export function Library({ loadShares = getListedTraces }: { loadShares?: typeof 
         </div>
       ) : loadError && shares === null ? (
         <section className="collection-empty" role="alert">
-          <b>The Library couldn’t load.</b>
+          <b>Public Traces couldn’t load.</b>
           <p>{loadError}</p>
           <button type="button" onClick={() => setReload((value) => value + 1)}>
             Try again
@@ -948,7 +980,7 @@ export function Library({ loadShares = getListedTraces }: { loadShares?: typeof 
         <>
           <section className="share-index" aria-label="Public traces">
             {visibleShares.map((share) => (
-              <LibraryShareRow share={share} key={share.trace_id} />
+              <PublicTraceRow share={share} key={share.trace_id} />
             ))}
           </section>
           {loadError && (
@@ -967,7 +999,7 @@ export function Library({ loadShares = getListedTraces }: { loadShares?: typeof 
             </button>
           )}
         </>
-      ) : query || provider !== 'All' ? (
+      ) : query || provider !== 'All' || dateRange !== 'all' ? (
         <section className="collection-empty">
           <b>Nothing matches.</b>
           <p>Try a different search or provider.</p>
@@ -982,6 +1014,8 @@ export function Library({ loadShares = getListedTraces }: { loadShares?: typeof 
               setLoadError('');
               setQuery('');
               setProvider('All');
+              setDateRange('all');
+              setSharedAfter(null);
             }}
           >
             Clear filters
@@ -989,8 +1023,8 @@ export function Library({ loadShares = getListedTraces }: { loadShares?: typeof 
         </section>
       ) : (
         <section className="collection-empty">
-          <b>The Library is empty.</b>
-          <p>Public traces will appear here after they’re shared.</p>
+          <b>No traces have been shared publicly yet.</b>
+          <p>Listed Notarized traces will appear here after they’re shared.</p>
           <a href="#/docs/share">Learn how sharing works</a>
         </section>
       )}
@@ -1186,6 +1220,7 @@ export function PublicTracePage({
   const [passwordError, setPasswordError] = useState('');
   const [checkingPassword, setCheckingPassword] = useState(false);
   const [packageError, setPackageError] = useState('');
+  const [copied, setCopied] = useState(false);
   const [reportOpen, setReportOpen] = useState(false);
   useEffect(() => {
     let cancelled = false;
@@ -1205,15 +1240,37 @@ export function PublicTracePage({
       .catch((error) => {
         if (cancelled) return;
         if (error instanceof PlatformApiError && error.status === 404) setPasswordRequired(true);
-        else setLoadError(errorMessage(error, 'Could not load this shared session.'));
+        else setLoadError('This shared Trace is unavailable.');
       });
     return () => {
       cancelled = true;
     };
   }, [loadShare, loadTrace, traceId]);
   useEffect(() => {
-    if (!share && !passwordRequired) return undefined;
-    if (share) document.title = `${share.title || share.model} · Notary by Exalto`;
+    if (!share && !passwordRequired && !loadError) return undefined;
+    const indexable = share?.visibility === 'listed' && !share.password_protected;
+    const title = indexable
+      ? `${share.title || share.model} · Notary by Exalto`
+      : 'Shared trace · Notary by Exalto';
+    const description = indexable
+      ? `${share.title || 'A shared Notarized trace'} · ${share.provider} ${share.model} · shared by ${share.publisher}`
+      : 'A shared Notarized trace from Notary by Exalto.';
+    document.title = title;
+    const metadata = [
+      document.head.querySelector('meta[name="description"]'),
+      document.head.querySelector('meta[property="og:title"]'),
+      document.head.querySelector('meta[property="og:description"]'),
+      document.head.querySelector('meta[name="twitter:title"]'),
+      document.head.querySelector('meta[name="twitter:description"]'),
+    ].filter((element): element is HTMLMetaElement => element instanceof HTMLMetaElement);
+    const previousMetadata = metadata.map((element) => element.content);
+    for (const element of metadata) {
+      element.content = element.matches(
+        '[name="description"], [property="og:description"], [name="twitter:description"]',
+      )
+        ? description
+        : title;
+    }
     const existingRobots = document.head.querySelector('meta[name="robots"][data-share-page]');
     const robots =
       existingRobots instanceof HTMLMetaElement ? existingRobots : document.createElement('meta');
@@ -1222,15 +1279,15 @@ export function PublicTracePage({
       robots.dataset.sharePage = 'true';
       document.head.appendChild(robots);
     }
-    robots.content =
-      passwordRequired || share?.visibility === 'unlisted' || share?.password_protected
-        ? 'noindex, nofollow, noarchive'
-        : 'index, follow';
+    robots.content = !indexable ? 'noindex, nofollow, noarchive' : 'index, follow';
     return () => {
       robots?.remove();
+      metadata.forEach((element, index) => {
+        element.content = previousMetadata[index];
+      });
       document.title = 'Notary by Exalto';
     };
-  }, [passwordRequired, share]);
+  }, [loadError, passwordRequired, share]);
   const unlock = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!password) return;
@@ -1250,7 +1307,7 @@ export function PublicTracePage({
       setCheckingPassword(false);
     }
   };
-  const saveProtectedPackage = async () => {
+  const exportPackage = async () => {
     setPackageError('');
     try {
       const blob = await downloadPackage(traceId);
@@ -1261,24 +1318,36 @@ export function PublicTracePage({
       link.click();
       window.setTimeout(() => URL.revokeObjectURL(url), 0);
     } catch (error) {
-      setPackageError(errorMessage(error, 'Could not download this trace package.'));
+      setPackageError(errorMessage(error, 'Could not export this .llmtrace package.'));
+    }
+  };
+  const copyShareLink = async () => {
+    setPackageError('');
+    try {
+      await navigator.clipboard.writeText(share?.public_url || window.location.href);
+      setCopied(true);
+    } catch (error) {
+      setPackageError(errorMessage(error, 'Could not copy this share link.'));
     }
   };
   if (loadError)
     return (
       <main className="share-page share-page-state" role="alert">
-        <h1>Share unavailable</h1>
-        <p>{loadError}</p>
-        <a href="#/library">Open Library</a>
+        <h1>Shared trace unavailable</h1>
+        <p>{loadError} It may be expired, stopped, missing, or temporarily unavailable.</p>
+        <a href="#/traces">Open public Traces</a>
       </main>
     );
   if (passwordRequired)
     return (
       <main className="share-password-page">
         <form className="share-password-gate" onSubmit={unlock}>
-          <span className="eyebrow">Protected trace</span>
-          <h1>Password required</h1>
-          <p>The publisher limited access to this disclosed conversation.</p>
+          <span className="eyebrow">Shared trace</span>
+          <h1>Open shared trace</h1>
+          <p>
+            This trace may require a password, or it may be expired, stopped, missing, or
+            unavailable. To protect access details, Notary does not distinguish these states.
+          </p>
           <label htmlFor="share-password">Password</label>
           <Input
             id="share-password"
@@ -1294,7 +1363,7 @@ export function PublicTracePage({
             </p>
           )}
           <div>
-            <a href="#/library">Back to Library</a>
+            <a href="#/traces">Back to public Traces</a>
             <button type="submit" disabled={!password || checkingPassword}>
               {checkingPassword ? 'Opening…' : 'Open trace'}
             </button>
@@ -1375,20 +1444,21 @@ export function PublicTracePage({
     <main className="share-page">
       <header className="share-page-header">
         <div>
-          <h1>{share.model}</h1>
+          <h1>{share.title || 'Shared Notarized trace'}</h1>
           <p>
             <b>{share.publisher}</b>
             <span>
               <ProviderIdentity provider={share.provider} />
             </span>
-            <span>{share.visibility}</span>
+            <span>{share.model}</span>
+            <span>Shared {sessionDate(share.shared_at)}</span>
           </p>
         </div>
         <div className="share-verification-mark">
           <i aria-hidden="true" />
           <span>
-            <b>Verified</b>
-            <small>Provider session</small>
+            <b>Notarized</b>
+            <small>Hosted verification passed</small>
           </span>
         </div>
       </header>
@@ -1420,6 +1490,27 @@ export function PublicTracePage({
               <dd>{authenticated}</dd>
             </div>
             <div>
+              <dt>Date shared</dt>
+              <dd>{sessionDate(share.shared_at)}</dd>
+            </div>
+            <div>
+              <dt>Evidence state</dt>
+              <dd>Notarized</dd>
+            </div>
+            <div>
+              <dt>Hosted verification</dt>
+              <dd>Passed</dd>
+            </div>
+            {share.notary_name && (
+              <div>
+                <dt>Remote notary</dt>
+                <dd>
+                  Notarized by {share.notary_name}
+                  {share.notary_operator && ` · Operated by ${share.notary_operator}`}
+                </dd>
+              </div>
+            )}
+            <div>
               <dt>Visibility</dt>
               <dd>
                 {share.visibility}
@@ -1434,16 +1525,16 @@ export function PublicTracePage({
             )}
           </dl>
           {share.password_protected ? (
-            <button className="share-package-download" type="button" onClick={saveProtectedPackage}>
+            <button className="share-package-download" type="button" onClick={exportPackage}>
               <span>Package</span>
-              <b>Download .llmtrace</b>
-              <small>{binaryFileSize(share.package_size_bytes)} · SHA-256 included</small>
+              <b>Export .llmtrace</b>
+              <small>{binaryFileSize(share.package_size_bytes)} · exact admitted bytes</small>
             </button>
           ) : (
-            <a className="share-package-download" href={share.package_url}>
+            <a className="share-package-download" href={share.package_url} download>
               <span>Package</span>
-              <b>Download .llmtrace</b>
-              <small>{binaryFileSize(share.package_size_bytes)} · SHA-256 included</small>
+              <b>Export .llmtrace</b>
+              <small>{binaryFileSize(share.package_size_bytes)} · exact admitted bytes</small>
             </a>
           )}
           {packageError && (
@@ -1454,6 +1545,10 @@ export function PublicTracePage({
           <details className="share-technical">
             <summary>Hashes and notary</summary>
             <dl>
+              <div>
+                <dt>Package size</dt>
+                <dd>{share.package_size_bytes.toLocaleString('en-US')} bytes</dd>
+              </div>
               <div>
                 <dt>Trace SHA-256</dt>
                 <dd>
@@ -1484,9 +1579,15 @@ export function PublicTracePage({
               </div>
             </dl>
           </details>
-          <button className="share-report-button" type="button" onClick={() => setReportOpen(true)}>
-            Report this trace
-          </button>
+          <div className="share-secondary-actions">
+            <button type="button" onClick={copyShareLink}>
+              {copied ? 'Copied' : 'Copy link'}
+            </button>
+            <a href="#/docs/verification">Verify independently</a>
+            <button type="button" onClick={() => setReportOpen(true)}>
+              Report this trace
+            </button>
+          </div>
         </aside>
       </div>
       <ShareReportDialog

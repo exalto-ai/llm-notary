@@ -517,7 +517,7 @@ const docPages: Record<DocPageKey, DocPage> = {
       },
       {
         heading: 'Choose visibility',
-        body: 'Unlisted is recommended and stays out of the Library. Listed appears in the Library. Both start accessible to anyone with the stable link.',
+        body: 'Unlisted is recommended and stays out of public Traces. Listed appears in public Traces. Both start accessible to anyone with the stable link.',
       },
       {
         heading: 'Manage access after admission',
