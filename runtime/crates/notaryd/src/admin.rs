@@ -1806,6 +1806,7 @@ async fn delete_trace_share(
     record.progress = ShareProgress::Stopped.as_str().to_owned();
     record.access_enabled = false;
     record.share_url = None;
+    record.package_url = None;
     record.updated_at_unix_ms = now_ms().map_err(|_| ApiError::internal("clock_invalid"))?;
     state
         .persistence
