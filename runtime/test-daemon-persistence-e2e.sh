@@ -44,19 +44,19 @@ fi
 case "$metadata_engine:$artifact_engine" in
   sqlite:filesystem)
     daemon_service=daemon
-    daemon_config=/etc/llm-notary/config.toml
+    daemon_config=/etc/notary/config.toml
     ;;
   postgres:filesystem)
     daemon_service=daemon-postgres
-    daemon_config=/etc/llm-notary/config-postgres.toml
+    daemon_config=/etc/notary/config-postgres.toml
     ;;
   sqlite:s3)
     daemon_service=daemon-s3
-    daemon_config=/etc/llm-notary/config-s3.toml
+    daemon_config=/etc/notary/config-s3.toml
     ;;
   postgres:s3)
     daemon_service=daemon-postgres-s3
-    daemon_config=/etc/llm-notary/config-postgres-s3.toml
+    daemon_config=/etc/notary/config-postgres-s3.toml
     ;;
 esac
 
@@ -313,7 +313,7 @@ postgres_psql() {
 }
 
 run_migrator() {
-  local config=${1:-/etc/llm-notary/config-postgres.toml}
+  local config=${1:-/etc/notary/config-postgres.toml}
   "${compose[@]}" run --rm --no-deps migrator migrate --config "$config"
 }
 
@@ -324,7 +324,7 @@ expect_postgres_daemon_failure() {
   local status
   set +e
   output=$("${compose[@]}" run --rm --no-deps --entrypoint /usr/bin/timeout \
-    daemon-postgres 15s notaryd --config /etc/llm-notary/config-postgres.toml 2>&1)
+    daemon-postgres 15s notaryd --config /etc/notary/config-postgres.toml 2>&1)
   status=$?
   set -e
   if [[ $status -eq 0 || $status -eq 124 ]]; then
@@ -390,7 +390,7 @@ SQL
     local lock_output
     local lock_status
     set +e
-    lock_output=$(run_migrator /etc/llm-notary/config-postgres-lock-timeout.toml 2>&1)
+    lock_output=$(run_migrator /etc/notary/config-postgres-lock-timeout.toml 2>&1)
     lock_status=$?
     set -e
     wait "$lock_holder_pid"
@@ -410,7 +410,7 @@ SQL
   local migration_status
   set +e
   migration_output=$("${compose[@]}" run --rm --no-deps --entrypoint /usr/bin/timeout \
-    migrator 15s notaryd migrate --config /etc/llm-notary/config-postgres.toml 2>&1)
+    migrator 15s notaryd migrate --config /etc/notary/config-postgres.toml 2>&1)
   migration_status=$?
   set -e
   if [[ $migration_status -eq 0 || $migration_status -eq 124 ]]; then
@@ -855,7 +855,7 @@ if [[ $profile == full ]]; then
 
   echo "sharing the exact verified package through a loopback hosted-API fixture"
   "${compose[@]}" exec --detach "$daemon_service" \
-    python3 /usr/local/libexec/llm-notary-e2e-share.py
+    python3 /usr/local/libexec/notary-e2e-share.py
   share_fixture_ready=0
   for _ in $(seq 1 30); do
     if "${compose[@]}" exec -T "$daemon_service" \

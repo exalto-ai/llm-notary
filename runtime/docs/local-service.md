@@ -80,7 +80,7 @@ configuration paths to the installation:
 
 ```ini
 # systemd service
-ExecStart=/usr/local/bin/notaryd --config /etc/llm-notary/config.toml
+ExecStart=/usr/local/bin/notaryd --config /etc/notary/config.toml
 ```
 
 ```xml
@@ -158,7 +158,7 @@ S3-compatible private bucket, select S3 explicitly:
 backend = "s3"
 
 [storage.s3]
-bucket = "llm-notary-private"
+bucket = "trace-artifacts"
 ```
 
 That minimal form uses AWS S3 in `us-east-1`, the private `notaryd`
@@ -201,7 +201,7 @@ recovery or notarization retry. Stop the daemon and run the bounded,
 report-only check before cleanup:
 
 ```bash
-notaryd reconcile-artifacts --config /etc/llm-notary/config.toml
+notaryd reconcile-artifacts --config /etc/notary/config.toml
 ```
 
 The JSON report verifies every referenced artifact and counts old,

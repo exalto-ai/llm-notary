@@ -10,7 +10,7 @@ const generatedDir = resolve(appRoot, 'src/platform-api/generated');
 const specification = resolve(generatedDir, 'openapi.json');
 const types = resolve(generatedDir, 'api.generated.d.ts');
 const check = process.argv.includes('--check');
-const temporaryDir = check ? mkdtempSync(join(tmpdir(), 'llm-notary-platform-openapi-')) : null;
+const temporaryDir = check ? mkdtempSync(join(tmpdir(), 'notary-platform-openapi-')) : null;
 const outputSpecification = temporaryDir ? join(temporaryDir, 'openapi.json') : specification;
 const outputTypes = temporaryDir ? join(temporaryDir, 'api.generated.d.ts') : types;
 

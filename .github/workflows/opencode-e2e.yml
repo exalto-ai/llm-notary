@@ -51,7 +51,7 @@ jobs:
       - name: Run production canary
         env:
           OPENROUTER_FREE_TIER_API_KEY: ${{ secrets.OPENROUTER_FREE_TIER_API_KEY }}
-          NOTARYD_E2E_API_KEY: ${{ secrets.LLM_NOTARY_E2E_API_KEY }}
+          NOTARYD_E2E_API_KEY: ${{ secrets.NOTARY_E2E_API_KEY }}
         run: |
           python3 runtime/benchmarks/opencode-e2e/run.py \
             --model "$CANARY_MODEL" \
@@ -63,7 +63,7 @@ jobs:
       - name: Post sanitized Slack summary
         if: always()
         env:
-          NOTARYD_E2E_SLACK_WEBHOOK_URL: ${{ secrets.LLM_NOTARY_SLACK_WEBHOOK_URL }}
+          NOTARYD_E2E_SLACK_WEBHOOK_URL: ${{ secrets.NOTARY_SLACK_WEBHOOK_URL }}
         run: python3 runtime/benchmarks/opencode-e2e/notify.py "$RUNNER_TEMP/opencode-e2e-result.json"
 
       - name: Upload sanitized metrics

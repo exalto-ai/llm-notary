@@ -385,9 +385,9 @@ jobs:
       - name: Validate standalone daemon cluster bundle
         run: |
           set -euo pipefail
-          state="$RUNNER_TEMP/llm-notary-cluster"
+          state="$RUNNER_TEMP/notary-cluster"
           NOTARYD_CLUSTER_STATE_DIR="$state" \
-            runtime/llm-notary-cluster.sh init \
+            runtime/notary-cluster.sh init \
               proxy.example.com admin.example.com \
               tls://notary.example.com:7047 \
               0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798 \
@@ -403,8 +403,16 @@ jobs:
           ' <<<"$rendered" >/dev/null
           test "$(wc -c < "$state/secrets/cluster-vault.key")" -eq 32
           test ! -e "$state/secrets/vault-passphrase"
+          # The initializer writes database, object-store, and dashboard
+          # credentials into its default state directory, so that directory
+          # must stay ignored by the repository that contains it.
+          default_state="$(sed -n \
+            's|.*NOTARYD_CLUSTER_STATE_DIR:-"$runtime_dir/\([^"]*\)".*|\1|p' \
+            runtime/notary-cluster.sh)"
+          test -n "$default_state"
+          git check-ignore --quiet "runtime/$default_state/secrets/admin-password"
           if NOTARYD_CLUSTER_STATE_DIR="$state" \
-            runtime/llm-notary-cluster.sh init \
+            runtime/notary-cluster.sh init \
               proxy.example.com admin.example.com \
               tls://notary.example.com:7047 \
               0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798 \

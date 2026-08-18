@@ -3401,7 +3401,7 @@ mod tests {
         #[cfg(feature = "cli")]
         {
             let root = std::env::temp_dir().join(format!(
-                "llm-notary-package-test-{}-{}",
+                "notary-package-test-{}-{}",
                 std::process::id(),
                 SystemTime::now()
                     .duration_since(UNIX_EPOCH)

@@ -15,11 +15,11 @@ username = "admin"
 
 [storage]
 backend = "s3"
-checkpoint_dir = "/var/lib/llm-notary/data/capture-checkpoints"
-package_dir = "/var/lib/llm-notary/data/trace-packages"
+checkpoint_dir = "/var/lib/notary/data/capture-checkpoints"
+package_dir = "/var/lib/notary/data/trace-packages"
 
 [storage.s3]
-bucket = "llm-notary-private"
+bucket = "trace-artifacts"
 region = "us-east-1"
 endpoint = "http://minio:9000"
 prefix = "notaryd"
@@ -30,7 +30,7 @@ operation_timeout_seconds = 30
 
 [metadata]
 backend = "postgres"
-path = "/var/lib/llm-notary/data/metadata.db"
+path = "/var/lib/notary/data/metadata.db"
 prompt_preview_chars = 1000
 output_preview_chars = 1000
 full_text_search = true

@@ -392,7 +392,7 @@ mod tests {
     #[test]
     fn canonical_registry_preserves_a_tls_endpoint() {
         let mut active = record(9, NotaryKeyStatus::Active);
-        active.host = "llm-notary-prod-server.fly.dev".to_owned();
+        active.host = "alice.notary.exalto.ai".to_owned();
         active.port = 443;
         active.transport = NotaryTransport::Tls;
         let registry = Registry {
@@ -404,17 +404,17 @@ mod tests {
         let parsed = parse_registry(&serde_json::to_vec(&registry).unwrap()).unwrap();
         assert_eq!(
             parsed.notaries[0].endpoint().unwrap().to_string(),
-            "tls://llm-notary-prod-server.fly.dev:443"
+            "tls://alice.notary.exalto.ai:443"
         );
     }
 
     #[test]
     fn endpoint_overrides_require_an_explicit_supported_transport() {
-        let tls = "tls://llm-notary-prod-server.fly.dev:443"
+        let tls = "tls://alice.notary.exalto.ai:443"
             .parse::<NotaryEndpoint>()
             .unwrap();
         assert_eq!(tls.transport, NotaryTransport::Tls);
-        assert_eq!(tls.host, "llm-notary-prod-server.fly.dev");
+        assert_eq!(tls.host, "alice.notary.exalto.ai");
         let tcp = "tcp://127.0.0.1:7047".parse::<NotaryEndpoint>().unwrap();
         assert_eq!(tcp.transport, NotaryTransport::Tcp);
         assert!("127.0.0.1:7047".parse::<NotaryEndpoint>().is_err());

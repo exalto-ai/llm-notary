@@ -7,7 +7,7 @@ use tauri_plugin_shell::{ShellExt, process::CommandChild};
 use crate::service_client::daemon_is_healthy;
 use crate::vault::{VaultSession, local_vault_mode, vault_unlock_key_for_child};
 
-const DESKTOP_CONTROL_STDIN_ENV: &str = "LLM_NOTARY_DESKTOP_CONTROL_STDIN";
+const DESKTOP_CONTROL_STDIN_ENV: &str = "NOTARYD_DESKTOP_CONTROL_STDIN";
 
 #[derive(Default)]
 pub(super) struct DaemonProcess(pub(super) Mutex<Option<CommandChild>>);

@@ -69,7 +69,7 @@ async fn profiles_capture_and_notarization_in_a_separate_notary_container() -> R
         .header("content-type", "application/json")
         // This is intentionally not a credential. The provider's 401/4xx
         // response still gives us an authenticated, representative transcript.
-        .header("authorization", "Bearer llm-notary-profile-invalid-key")
+        .header("authorization", "Bearer notary-profile-invalid-key")
         .body(chunked_request_body(body.clone()))?;
 
     let capture_started = Instant::now();

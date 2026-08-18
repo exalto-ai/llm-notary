@@ -911,7 +911,7 @@ export function App({
         ?.setAttribute('content', activeTheme === 'dark' ? '#171717' : '#f6f5f2');
     };
     applyTheme();
-    window.localStorage.setItem('llm-notary-theme', theme);
+    window.localStorage.setItem('notary-theme', theme);
     if (theme === 'auto') media.addEventListener('change', applyTheme);
     return () => media.removeEventListener('change', applyTheme);
   }, [theme]);

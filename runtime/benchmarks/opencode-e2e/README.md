@@ -81,8 +81,8 @@ changing it starts a new observational timing series. Configure these
 repository secrets:
 
 - `OPENROUTER_FREE_TIER_API_KEY`
-- `LLM_NOTARY_E2E_API_KEY`
-- `LLM_NOTARY_SLACK_WEBHOOK_URL`
+- `NOTARY_E2E_API_KEY`
+- `NOTARY_SLACK_WEBHOOK_URL`
 
 The workflow maps the latter two repository secret names to the canonical
 `NOTARYD_E2E_API_KEY` and `NOTARYD_E2E_SLACK_WEBHOOK_URL` process variables.

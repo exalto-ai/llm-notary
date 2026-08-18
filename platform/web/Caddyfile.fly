@@ -1,8 +1,8 @@
 :80 {
 	route {
 		handle_path /downloads/* {
-			reverse_proxy https://llm-notary-prod-downloads.t3.tigrisfiles.io {
-				header_up Host llm-notary-prod-downloads.t3.tigrisfiles.io
+			reverse_proxy https://notary-prod-downloads.t3.tigrisfiles.io {
+				header_up Host notary-prod-downloads.t3.tigrisfiles.io
 			}
 		}
 

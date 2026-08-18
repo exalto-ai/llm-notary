@@ -42,11 +42,11 @@ credentials to the exact `NOTARY_API_S3_*` settings. The API intentionally does
 not read ambient `AWS_*` or provider-specific fallback names.
 
 CLI archives use a separate public Tigris bucket named
-`llm-notary-prod-downloads`. The web gateway proxies `/downloads` to that
+`notary-prod-downloads`. The web gateway proxies `/downloads` to that
 bucket's fixed public origin; do not make the private intake bucket public or
 reuse either bucket's credential for the other. The GitHub `production`
-environment holds the download bucket's `LLM_NOTARY_DOWNLOADS_ACCESS_KEY_ID` and
-`LLM_NOTARY_DOWNLOADS_SECRET_ACCESS_KEY`. No deployed Fly app needs that
+environment holds the download bucket's `NOTARY_DOWNLOADS_ACCESS_KEY_ID` and
+`NOTARY_DOWNLOADS_SECRET_ACCESS_KEY`. No deployed Fly app needs that
 upload credential.
 
 The API uses base64-encoded Fly file secrets for every credential and for the

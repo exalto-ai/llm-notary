@@ -726,7 +726,7 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
 
         let root = std::env::temp_dir().join(format!(
-            "llm-notary-vault-permissions-{}-{}",
+            "notary-vault-permissions-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
