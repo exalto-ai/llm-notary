@@ -1,4 +1,4 @@
-# LLM Notary workflows
+# Notary workflows
 
 Use these commands as workflow examples, not as a frozen API contract. Fetch
 the running daemon's OpenAPI document before using a route not represented by
@@ -6,28 +6,28 @@ the installed CLI.
 
 ## Read-only discovery
 
-Check the service, then list captures using server-side filters:
+Check the service, then list Traces using server-side filters:
 
 ```bash
-llm-notary --json status
-llm-notary --json captures list --metadata-only --provider openai --limit 20
-llm-notary --json captures list --metadata-only --state notarized --limit 20
-llm-notary captures show trc-example
+notaryctl --json status
+notaryctl --json traces list --metadata-only --provider openai --limit 20
+notaryctl --json traces list --metadata-only --state notarized --limit 20
+notaryctl traces show trc-example
 ```
 
-Use `--metadata-only` whenever structured capture-list output enters an agent
-transcript. Raw capture-list JSON includes stored prompt and output previews.
-The human-readable `captures list` and `captures show` output also omit those
+Use `--metadata-only` whenever structured Trace-list output enters an agent
+transcript. Raw Trace-list JSON includes stored prompt and output previews.
+The human-readable `traces list` and `traces show` output omits those
 previews. Do not print previews unless the user explicitly asks and the local
 preview policy permits it.
 When selecting the newest or oldest result, do not infer list order. Follow all
 relevant pages and compare the returned timestamps unless the running daemon's
 contract explicitly guarantees an order.
 
-Verify a notarized capture without printing its disclosed bodies:
+Verify a Notarized Trace without printing its disclosed bodies:
 
 ```bash
-llm-notary --json traces verify trc-example
+notaryctl --json traces verify trc-example
 ```
 
 `traces show` prints the canonical disclosed request and response bodies. Run
@@ -35,17 +35,17 @@ it only after the user explicitly asks to place that content in the current
 agent transcript:
 
 ```bash
-llm-notary --json traces show trc-example
+notaryctl --json traces show trc-example
 ```
 
 For a portable file that is not cataloged by this daemon, the only supported
 path-based workflow is verification of a `.llmtrace` package:
 
 ```bash
-llm-notary --json traces verify ./capture.llmtrace
+notaryctl --json traces verify ./capture.llmtrace
 ```
 
-Never pass a `.llmcapture` or `.llmbundle` path. Those files are encrypted
+Never pass a `.llmcapture` path. Those files are encrypted
 private retry state that can reconstruct the original credential-bearing
 request.
 
@@ -55,27 +55,20 @@ Explain that notarization generates a proof, can take substantially longer
 than capture, and does not publish anything. After the user approves, run:
 
 ```bash
-llm-notary --json notarization trc-example --wait
+notaryctl --json traces notarize trc-example --wait
 ```
 
-Without `--wait`, save the returned `op-...` identifier and poll it:
+Without `--wait`, inspect the same Trace for its technical operation state and
+attempt history. Use trace-filtered Activity when explaining a failure:
 
 ```bash
-llm-notary --json operation op-example
-```
-
-Treat `succeeded`, `failed`, and `interrupted` as terminal states. Use the
-operation's attempt history and redacted daemon events when explaining a
-failure:
-
-```bash
-llm-notary --json events --operation-id op-example --limit 20
+notaryctl --json activity --trace-id trc-example --limit 20
 ```
 
 Ask again before retrying a failed or interrupted operation:
 
 ```bash
-llm-notary --json notarization trc-example
+notaryctl --json traces notarize trc-example
 ```
 
 After notarization succeeds, verify the Trace and report `outcome`,
@@ -89,15 +82,15 @@ notarized package will be verified and safety-scanned, and that its disclosed
 request and response bodies can become visible to anyone with the resulting
 link. Confirm the visibility:
 
-- `unlisted`: absent from Library discovery but accessible to anyone with the
+- `unlisted`: absent from public Trace discovery but accessible to anyone with the
   link; it is not private.
-- `listed`: eligible for public Library discovery.
+- `listed`: eligible for public Trace discovery.
 
 After explicit approval, run one of:
 
 ```bash
-llm-notary --json share trc-example --visibility unlisted
-llm-notary --json share trc-example --visibility listed
+notaryctl --json traces share trc-example --visibility unlisted
+notaryctl --json traces share trc-example --visibility listed
 ```
 
 Do not use `--force` merely to bypass a warning. Review the reported disclosure
@@ -110,14 +103,14 @@ not claim the Trace is reachable until
 
 ## Account and authentication changes
 
-Ask before running `llm-notary login` or `llm-notary logout`. The browser
-approval flow connects the local daemon to an LLM Notary account; it does not
+Ask before running `notaryctl account connect` or `notaryctl account disconnect`. The browser
+approval flow connects the local daemon to a Notary Account; it does not
 expose the vault-held account credential to the agent.
 
 If `admin.auth` is configured, use an approved private file:
 
 ```bash
-llm-notary --admin-password-file /private/admin-password --json status
+notaryctl --admin-password-file /private/admin-password --json status
 ```
 
 Do not read the password file or place its contents in an environment variable,

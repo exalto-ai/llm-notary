@@ -3240,27 +3240,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "92daf443525c4cce67b150400bc2316076100ce0b3686209eb8cf3c31612e6f0"
 
 [[package]]
-name = "llm-notary-cli"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "axum",
- "base64 0.22.1",
- "clap",
- "llm-notary-updater",
- "reqwest 0.12.28",
- "rpassword",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
- "toml",
- "url",
- "uuid",
- "windows-sys 0.61.2",
-]
-
-[[package]]
 name = "llm-notary-updater"
 version = "0.1.0"
 dependencies = [
@@ -3955,6 +3934,27 @@ dependencies = [
  "tempfile",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "notaryctl"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "base64 0.22.1",
+ "clap",
+ "llm-notary-updater",
+ "reqwest 0.12.28",
+ "rpassword",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "toml",
+ "url",
+ "uuid",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

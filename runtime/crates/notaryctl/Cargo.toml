@@ -1,13 +1,13 @@
 [package]
-name = "llm-notary-cli"
+name = "notaryctl"
 version = "0.1.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
-description = "Thin REST client for the local LLM Notary daemon"
+description = "Thin REST client for the Notary daemon"
 
 [[bin]]
-name = "llm-notary"
-path = "src/bin/llm-notary.rs"
+name = "notaryctl"
+path = "src/bin/notaryctl.rs"
 
 [dependencies]
 anyhow = "1.0"

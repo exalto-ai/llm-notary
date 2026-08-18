@@ -1,6 +1,6 @@
 [workspace]
 members = [
-    "crates/llm-notary-cli",
+    "crates/notaryctl",
     "crates/notary-core",
     "crates/notaryd",
     "crates/notary-server",

@@ -4,7 +4,7 @@ LLM Notary creates selectively disclosed, independently verifiable evidence for 
 
 ## Repository boundary
 
-- [`runtime/`](runtime/README.md) is the complete public runtime: `notaryd`, the thin `llm-notary` REST client, the generic remote notary, protocol/evidence contracts, local dashboard, updater, documentation, CI, and pinned TLSNotary sources. It builds on its own and is the only tree projected into the public runtime repository.
+- [`runtime/`](runtime/README.md) is the complete public runtime: `notaryd`, the thin `notaryctl` REST client, the generic remote notary, protocol/evidence contracts, local dashboard, updater, documentation, CI, and pinned TLSNotary sources. It builds on its own and is the only tree projected into the public runtime repository.
 - `platform/crates/notary-api` owns accounts, credits, billing, uploads, sharing, and the hosted HTTP API.
 - `platform/crates/notary-server-platform-adapter` injects private platform admission and usage settlement policy into the generic runtime notary.
 - `platform/migrations` contains forward-only hosted database migrations.

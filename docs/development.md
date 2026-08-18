@@ -9,7 +9,7 @@ documentation update rules that protect LLM Notary's trust boundaries.
 | --- | --- |
 | `runtime/` | self-contained public Cargo/frontend workspace, docs, tests, containers, and vendored dependencies |
 | `runtime/crates/notaryd/` | local proxy, catalog, vault integration, REST API, clustered operation, and embedded dashboard |
-| `runtime/crates/llm-notary-cli/` | thin localhost REST command client |
+| `runtime/crates/notaryctl/` | thin localhost REST command client |
 | `runtime/crates/llm-notary-updater/` | signed-update verification shared by CLI and desktop |
 | `runtime/crates/notary-core/` | Proxy-TLS protocol, evidence contracts, normalization, trust directory, and verification |
 | `runtime/crates/notary-server/` | public ticketless remote notary runtime and generic admission/lifecycle seam |
@@ -68,7 +68,7 @@ Run the checks relevant to edited code:
 ```bash
 cargo fmt --check
 cargo fmt --manifest-path runtime/Cargo.toml --check \
-  -p notary-core -p notaryd -p llm-notary-cli \
+  -p notary-core -p notaryd -p notaryctl \
   -p llm-notary-updater -p notary-server
 cargo clippy \
   -p notary-api \
@@ -144,7 +144,7 @@ runtime/test-daemon-persistence-e2e.sh postgres s3 1 full
 runtime/test-daemon-persistence-e2e.sh postgres s3 2 full
 ```
 
-The smoke test builds and launches the real `notaryd` and `llm-notary`
+The smoke test builds and launches the real `notaryd` and `notaryctl`
 binaries in Docker without publishing either loopback listener. It initializes
 the vault and schema, checks `/healthz`, and runs the REST-backed command client.
 It then uses deterministic synthetic rows and deliberately invalid encrypted

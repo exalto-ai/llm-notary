@@ -2,7 +2,7 @@ use std::process::Command;
 
 #[test]
 fn json_mode_formats_argument_errors_without_plain_text() {
-    let output = Command::new(env!("CARGO_BIN_EXE_llm-notary"))
+    let output = Command::new(env!("CARGO_BIN_EXE_notaryctl"))
         .args(["--json", "not-a-command"])
         .output()
         .unwrap();

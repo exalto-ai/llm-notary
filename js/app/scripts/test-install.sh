@@ -8,12 +8,12 @@ build_id="0123456789abcdef0123456789abcdef01234567-test"
 version="0.1.0"
 fixture_root="$test_root/downloads/cli"
 build_root="$fixture_root/builds/$build_id"
-package="llm-notary-${version}-linux-x86_64"
+package="notary-runtime-${version}-linux-x86_64"
 archive="$package.tar.gz"
 mkdir -p "$build_root" "$test_root/package/$package" "$test_root/fake-bin"
 printf '%s %s\n' "$build_id" "$version" > "$fixture_root/latest"
 
-for program in llm-notary notaryd; do
+for program in notaryctl notaryd; do
   printf '#!/bin/sh\nprintf "%%s fixture\\n" "%s"\n' "$program" > "$test_root/package/$package/$program"
   chmod 0755 "$test_root/package/$package/$program"
 done
@@ -40,7 +40,7 @@ PATH="$test_root/fake-bin:$PATH" \
   LLM_NOTARY_INSTALL_DIR="$test_root/bin" \
   sh "$(dirname "$0")/../public/install.sh"
 
-test "$("$test_root/bin/llm-notary")" = "llm-notary fixture"
+test "$("$test_root/bin/notaryctl")" = "notaryctl fixture"
 test "$("$test_root/bin/notaryd")" = "notaryd fixture"
 
 printf 'tampered\n' >> "$build_root/$archive"

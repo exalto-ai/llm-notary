@@ -41,7 +41,7 @@ const installCommand = 'curl -fsSL https://notary.exalto.ai/install.sh | sh';
 const sourceInstallCommand = `git clone https://github.com/exalto-ai/notary-runtime.git
 cd notary-runtime
 cargo install --locked --path crates/notaryd --bin notaryd
-cargo install --locked --path crates/llm-notary-cli --bin llm-notary`;
+cargo install --locked --path crates/notaryctl --bin notaryctl`;
 
 const docPages: Record<DocPageKey, DocPage> = {
   overview: {
@@ -100,7 +100,7 @@ const docPages: Record<DocPageKey, DocPage> = {
       },
       {
         heading: 'A first successful run',
-        code: `${installCommand}\n\nnotaryd\n# Open http://127.0.0.1:8788 for the local dashboard.\n# Point an OpenAI client at http://127.0.0.1:8787/openai/v1.\n\nllm-notary status\nllm-notary captures list`,
+        code: `${installCommand}\n\nnotaryd\n# Open http://127.0.0.1:8788 for the local dashboard.\n# Point an OpenAI client at http://127.0.0.1:8787/openai/v1.\n\nnotaryctl status\nnotaryctl traces list`,
       },
       {
         heading: 'The claim',
@@ -209,12 +209,12 @@ const docPages: Record<DocPageKey, DocPage> = {
       },
       {
         heading: 'Programs',
-        body: '`notaryd` is the long-running local service. `llm-notary` is its short-lived REST client. The website archive installs both together.',
+        body: '`notaryd` is the long-running local service. `notaryctl` is its short-lived REST client. The website archive installs both together.',
       },
       {
         heading: 'Install the agent skill',
         body: 'The CLI bundles portable instructions for finding Traces, notarizing with approval, verifying packages, diagnosing operations, and protecting private evidence. Install them for Codex, Claude Code, or both. The command does not contact or start the daemon. Use `--skills-dir /path/to/agent/skills` for another Agent Skills compatible client; re-run with `--force` only after inspecting a different existing skill. Claude Code uses `$CLAUDE_CONFIG_DIR/skills` when that environment variable is nonempty and `~/.claude/skills` otherwise. It detects changes inside an existing personal skills directory; restart it if that directory did not exist when the current session started.',
-        code: 'llm-notary skill install --target codex\nllm-notary skill install --target claude\nllm-notary skill install --target all',
+        code: 'notaryctl skill install --target codex\nnotaryctl skill install --target claude\nnotaryctl skill install --target all',
       },
       { heading: 'Start the service', code: 'notaryd' },
       {
@@ -228,13 +228,13 @@ const docPages: Record<DocPageKey, DocPage> = {
       },
       {
         heading: 'Use the command client',
-        body: "`llm-notary` is a short-lived client for the daemon's versioned loopback API. It checks daemon health and never opens the metadata store or vault directly. Add `--json` for automation. Raw capture-list JSON includes stored prompt and output previews, so add `--metadata-only` before sending structured capture results to an agent transcript.",
-        code: 'llm-notary status\nllm-notary captures list --provider openai\nllm-notary --json captures list --provider openai --metadata-only\nllm-notary operation op-example --json\nllm-notary open',
+        body: "`notaryctl` is a short-lived client for the daemon's versioned loopback API. It checks daemon health and never opens the metadata store or vault directly. Add `--json` for automation. Raw capture-list JSON includes stored prompt and output previews, so add `--metadata-only` before sending structured capture results to an agent transcript.",
+        code: 'notaryctl status\nnotaryctl traces list --provider openai\nllm-notary --json captures list --provider openai --metadata-only\nnotaryctl traces show op-example --json\nllm-notary open',
       },
       {
         heading: 'Connect a hosted account when needed',
-        body: 'Local capture, notarization, and verification do not require an account. Connect one to use account allowances, share a notarized trace, or manage the same device from hosted Settings. `llm-notary login` opens a browser approval flow and stores the rotating device credential only in the daemon credential vault. `whoami` shows the connected identity, plan, and balances without revealing the credential; `logout` disconnects that device without deleting local evidence.',
-        code: 'llm-notary login\nllm-notary whoami\nllm-notary logout',
+        body: 'Local capture, notarization, and verification do not require an account. Connect one to use account allowances, share a notarized trace, or manage the same device from hosted Settings. `notaryctl account connect` opens a browser approval flow and stores the rotating device credential only in the daemon credential vault. `account show` shows the connected identity, plan, and balances without revealing the credential; `account disconnect` disconnects that device without deleting local evidence.',
+        code: 'notaryctl account connect\nnotaryctl account show\nnotaryctl account disconnect',
       },
       {
         heading: 'Use an API key for unattended hosts',
@@ -400,7 +400,7 @@ const docPages: Record<DocPageKey, DocPage> = {
       },
       {
         heading: 'Your usage',
-        body: 'The hosted dashboard shows the current plan, capture and notarization balances, trace storage, monthly reset, purchases, offers, and activity. A connected local service can retrieve the same account summary with `llm-notary whoami --json`.',
+        body: 'The hosted dashboard shows the current plan, capture and notarization balances, trace storage, monthly reset, purchases, offers, and activity. A connected local service can retrieve the same account summary with `notaryctl account show --json`.',
       },
       {
         heading: 'Evidence is unchanged',
@@ -477,7 +477,7 @@ const docPages: Record<DocPageKey, DocPage> = {
       },
       {
         heading: 'Verify a portable package',
-        code: 'llm-notary traces verify ./capture.llmtrace\nPOST /api/verify',
+        code: 'notaryctl traces verify ./capture.llmtrace\nPOST /api/verify',
         body: 'Use the local CLI to verify locally, or upload the package on the public Verify page. The hosted page checks the package without saving it.',
       },
       {
@@ -486,7 +486,7 @@ const docPages: Record<DocPageKey, DocPage> = {
       },
       {
         heading: 'Download or verify locally',
-        code: 'GET /v1/traces/{trace_id}/package.llmtrace\nPOST /v1/traces/{trace_id}/verify\nllm-notary traces verify ./trace.llmtrace',
+        code: 'GET /v1/traces/{trace_id}/package.llmtrace\nPOST /v1/traces/{trace_id}/verify\nnotaryctl traces verify ./trace.llmtrace',
       },
       {
         heading: 'What verification checks',

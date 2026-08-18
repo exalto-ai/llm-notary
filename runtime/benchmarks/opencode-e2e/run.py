@@ -426,15 +426,15 @@ def git_output(repository: Path, *arguments: str) -> bytes:
 def initialize_fixture(fixture: Path, destination: Path) -> None:
     shutil.copytree(fixture, destination)
     git_output(destination, "init", "--quiet")
-    git_output(destination, "config", "user.name", "LLM Notary Canary")
+    git_output(destination, "config", "user.name", "Notary Canary")
     git_output(destination, "config", "user.email", "canary@example.invalid")
     git_output(destination, "add", "--all")
     environment = os.environ.copy()
     environment.update(
         {
-            "GIT_AUTHOR_NAME": "LLM Notary Canary",
+            "GIT_AUTHOR_NAME": "Notary Canary",
             "GIT_AUTHOR_EMAIL": "canary@example.invalid",
-            "GIT_COMMITTER_NAME": "LLM Notary Canary",
+            "GIT_COMMITTER_NAME": "Notary Canary",
             "GIT_COMMITTER_EMAIL": "canary@example.invalid",
             "GIT_AUTHOR_DATE": "2025-01-01T00:00:00Z",
             "GIT_COMMITTER_DATE": "2025-01-01T00:00:00Z",
@@ -519,7 +519,7 @@ class Canary:
             }
         )
         self.cli = [
-            arguments.llm_notary,
+            arguments.notaryctl,
             "--json",
             "--config",
             str(self.config),
@@ -543,7 +543,7 @@ class Canary:
             raise CanaryFailure("daemon_start", "daemon_start_failed") from error
         wait_for_daemon(self.admin_origin, self.daemon)
         account = run_json(
-            [*self.cli, "whoami"],
+            [*self.cli, "account", "show"],
             env=self.environment,
             stage="daemon_start",
             code="platform_auth_failed",
@@ -563,7 +563,7 @@ class Canary:
 
     def traces(self) -> list[dict[str, Any]]:
         response = run_json(
-            [*self.cli, "captures", "list", "--provider", "openrouter", "--limit", "100"],
+            [*self.cli, "traces", "list", "--provider", "openrouter", "--limit", "100"],
             env=self.environment,
             stage="trace",
             code="trace_list_failed",
@@ -632,7 +632,7 @@ class Canary:
                     "--dir",
                     str(repository),
                     "--title",
-                    "LLM Notary Retry-After canary",
+                    "Notary Retry-After canary",
                     task,
                 ],
                 cwd=repository,
@@ -730,9 +730,9 @@ class Canary:
             if not isinstance(trace_id, str):
                 raise CanaryFailure("notarization", "notarization_failed")
             queued = run_json(
-                [*self.cli, "notarization", trace_id],
+                [*self.cli, "traces", "notarize", trace_id, "--wait"],
                 env=self.environment,
-                timeout=60,
+                timeout=self.arguments.notarization_timeout,
                 stage="notarization",
                 code="notarization_failed",
             )
@@ -742,17 +742,6 @@ class Canary:
             ):
                 raise CanaryFailure("notarization", "notarization_failed")
             operation_id = operation["operation_id"]
-            deadline = time.monotonic() + self.arguments.notarization_timeout
-            while operation.get("state") not in TERMINAL_OPERATION_STATES:
-                if time.monotonic() >= deadline:
-                    raise CanaryFailure("notarization", "notarization_timeout")
-                time.sleep(2)
-                operation = run_json(
-                    [*self.cli, "operation", operation_id],
-                    env=self.environment,
-                    stage="notarization",
-                    code="notarization_failed",
-                )
             if operation.get("state") != "succeeded":
                 raise CanaryFailure(
                     "notarization", operation.get("failure_code") or "notarization_failed"
@@ -804,6 +793,7 @@ class Canary:
             share = run_json(
                 [
                     *self.cli,
+                    "traces",
                     "share",
                     trace_id,
                     "--visibility",
@@ -896,7 +886,7 @@ def base_result(arguments: argparse.Namespace) -> dict[str, Any]:
             "runner_image": os.environ.get("ImageOS", sys.platform),
         },
         "versions": {
-            "llm_notary": command_version(arguments.llm_notary, "--version"),
+            "notaryctl": command_version(arguments.notaryctl, "--version"),
             "opencode": command_version(arguments.opencode, "--version"),
             "rust": command_version("rustc", "--version"),
             "node": command_version("node", "--version"),
@@ -979,12 +969,12 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("--fixture", default=str(directory / "fixture"))
     parser.add_argument("--model", default=DEFAULT_MODEL)
     parser.add_argument("--opencode", default="opencode")
-    parser.add_argument("--llm-notary", default="llm-notary")
+    parser.add_argument("--notaryctl", default="notaryctl")
     parser.add_argument("--notaryd", default="notaryd")
     parser.add_argument(
         "--result",
         default=os.environ.get(
-            "NOTARYD_E2E_RESULT", "/tmp/llm-notary-opencode-e2e-result.json"
+            "NOTARYD_E2E_RESULT", "/tmp/notary-opencode-e2e-result.json"
         ),
     )
     parser.add_argument("--agent-timeout", type=int, default=600)
@@ -999,7 +989,7 @@ def main() -> int:
     result = base_result(arguments)
     started = time.monotonic()
     temporary_base = Path(os.environ.get("NOTARYD_E2E_TMPDIR", "/tmp"))
-    root = Path(tempfile.mkdtemp(prefix="llm-notary-opencode-e2e-", dir=temporary_base))
+    root = Path(tempfile.mkdtemp(prefix="notary-opencode-e2e-", dir=temporary_base))
     os.chmod(root, 0o700)
     canary = Canary(arguments, root)
     try:

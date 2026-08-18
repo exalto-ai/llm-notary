@@ -250,7 +250,7 @@ client surface. Remote and cloud Codex work cannot reach the loopback proxy.
 ## Other agents and SDKs
 
 - To let a local coding agent inspect and operate captured evidence, install
-  the portable management skill with `llm-notary skill install --target codex`,
+  the portable management skill with `notaryctl skill install --target codex`,
   `--target claude`, or `--target all`. Use `--skills-dir` for another
   Agent Skills compatible client. This teaches the agent to use the loopback
   administration API; it does not route that agent's own model traffic through

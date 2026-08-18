@@ -114,7 +114,14 @@ wait_for_daemon() {
 
 daemon_cli() {
   "${compose[@]}" exec -T "$daemon_service" \
-    llm-notary --config "$daemon_config" --json "$@"
+    notaryctl --config "$daemon_config" --json "$@"
+}
+
+daemon_operation() {
+  local operation_id=$1
+  "${compose[@]}" exec -T "$daemon_service" \
+    curl --fail --silent --show-error \
+      "http://127.0.0.1:8788/v1/operations/$operation_id"
 }
 
 wait_for_trace_ready() {
@@ -122,7 +129,7 @@ wait_for_trace_ready() {
   local trace=""
   local state=""
   for _ in $(seq 1 40); do
-    trace=$(daemon_cli captures show "$trace_id")
+    trace=$(daemon_cli traces show "$trace_id")
     if printf '%s' "$trace" | "${compose[@]}" exec -T "$daemon_service" jq -e '
       .state == "captured" and
       any(.artifacts[]; .kind == "capture_checkpoint")
@@ -692,7 +699,7 @@ if [[ $artifact_engine == s3 ]]; then
     .counts.notarizing == 0 and
     .counts.notarized == 0
   '
-  missing_trace=$(daemon_cli captures show trc-e2e-missing)
+  missing_trace=$(daemon_cli traces show trc-e2e-missing)
   assert_json "$missing_trace" '
     .state == null and
     .status == "capture_failed" and
@@ -710,7 +717,7 @@ else
   '
 fi
 
-recovered_trace=$(daemon_cli captures show trc-e2e-recovered)
+recovered_trace=$(daemon_cli traces show trc-e2e-recovered)
 assert_json "$recovered_trace" '
   .state == "captured" and
   .status == null and
@@ -723,7 +730,7 @@ capture_search_term=SQLite
 if [[ $metadata_engine == postgres ]]; then
   capture_search_term=PostgreSQL
 fi
-capture_page=$(daemon_cli captures list --query "$capture_search_term" --metadata-only)
+capture_page=$(daemon_cli traces list --query "$capture_search_term" --metadata-only)
 assert_json "$capture_page" '
   (.items | length) == 1 and
   .items[0].trace_id == "trc-e2e-notarize" and
@@ -732,7 +739,7 @@ assert_json "$capture_page" '
 '
 
 echo "queuing a notarization to exercise durable mutation and failure history"
-notarization=$(daemon_cli notarization trc-e2e-notarize --wait)
+notarization=$(daemon_cli traces notarize trc-e2e-notarize --wait)
 expected_fixture_failure=notarization_error
 if [[ $artifact_engine == s3 ]]; then
   expected_fixture_failure=artifact_corrupt
@@ -746,7 +753,7 @@ assert_json "$notarization" '
 ' --arg failure_code "$expected_fixture_failure"
 operation_id=$(json_value "$notarization" '.operation.operation_id')
 
-events=$(daemon_cli events --trace-id trc-e2e-notarize --all)
+events=$(daemon_cli activity --trace-id trc-e2e-notarize --all)
 assert_json "$events" '
   any(.items[]; .event_type == "notarization_queued") and
   any(.items[]; .event_type == "notarization_failed")
@@ -787,7 +794,7 @@ if [[ $profile == full ]]; then
     any(.artifacts[]; .kind == "capture_checkpoint")
   ' --arg trace_id "$full_trace_id"
 
-  full_page=$(daemon_cli captures list --query 'offline daemon E2E prompt')
+  full_page=$(daemon_cli traces list --query 'offline daemon E2E prompt')
   assert_json "$full_page" '
     any(.items[];
       .trace_id == $trace_id and
@@ -810,7 +817,7 @@ if [[ $profile == full ]]; then
   fi
 
   echo "notarizing the captured checkpoint and building a verified package"
-  full_notarization=$(daemon_cli notarization "$full_trace_id" --wait)
+  full_notarization=$(daemon_cli traces notarize "$full_trace_id" --wait)
   assert_json "$full_notarization" '
     .deduplicated == false and
     .operation.trace_id == $trace_id and
@@ -823,8 +830,8 @@ if [[ $profile == full ]]; then
   full_trace=$(daemon_cli traces show "$full_trace_id")
   assert_json "$full_trace" '
     .trace_id == $trace_id and
-    .manifest.source.provider.name == "openai" and
-    .manifest.source.provider.host == "api.openai.com"
+    .content.manifest.source.provider.name == "openai" and
+    .content.manifest.source.provider.host == "api.openai.com"
   ' --arg trace_id "$full_trace_id"
 
   daemon_verification=$(daemon_cli traces verify "$full_trace_id")
@@ -862,7 +869,7 @@ if [[ $profile == full ]]; then
     echo "loopback share fixture did not become ready" >&2
     exit 1
   fi
-  full_share=$(daemon_cli share "$full_trace_id")
+  full_share=$(daemon_cli traces share "$full_trace_id")
   assert_json "$full_share" '
     .trace_id == $trace_id and
     .progress == "verifying" and
@@ -914,7 +921,7 @@ if [[ $profile == full ]]; then
     .output_preview == "offline streaming response" and
     any(.artifacts[]; .kind == "capture_checkpoint")
   ' --arg trace_id "$stream_trace_id"
-  stream_notarization=$(daemon_cli notarization "$stream_trace_id" --wait)
+  stream_notarization=$(daemon_cli traces notarize "$stream_trace_id" --wait)
   assert_json "$stream_notarization" '
     .operation.trace_id == $trace_id and
     .operation.state == "succeeded" and
@@ -924,7 +931,7 @@ if [[ $profile == full ]]; then
   stream_trace=$(daemon_cli traces show "$stream_trace_id")
   assert_json "$stream_trace" '
     .trace_id == $trace_id and
-    .manifest.source.provider.name == "openai"
+    .content.manifest.source.provider.name == "openai"
   ' --arg trace_id "$stream_trace_id"
   stream_verification=$(daemon_cli traces verify "$stream_trace_id")
   assert_json "$stream_verification" '
@@ -941,7 +948,7 @@ if [[ $profile == full ]]; then
   ' --arg trace_id "$stream_trace_id"
   stream_package_sha=$("${compose[@]}" exec -T "$daemon_service" \
     sha256sum /tmp/daemon-e2e-stream.llmtrace | awk '{print $1}')
-  stream_share=$(daemon_cli share "$stream_trace_id")
+  stream_share=$(daemon_cli traces share "$stream_trace_id")
   assert_json "$stream_share" '
     .trace_id == $trace_id and
     .progress == "verifying"
@@ -973,7 +980,7 @@ if [[ $profile == full ]]; then
     echo "crash-window capture omitted a valid trace ID" >&2
     exit 1
   fi
-  crash_notarization=$(daemon_cli notarization "$crash_trace_id")
+  crash_notarization=$(daemon_cli traces notarize "$crash_trace_id")
   crash_operation_id=$(json_value "$crash_notarization" '.operation.operation_id')
 
   crash_package_path=$(artifact_target "$crash_trace_id" trace_package)
@@ -999,11 +1006,11 @@ if [[ $profile == full ]]; then
   "${compose[@]}" up --detach --no-deps "$daemon_service"
   wait_for_daemon
 
-  interrupted=$(daemon_cli operation "$crash_operation_id")
+  interrupted=$(daemon_operation "$crash_operation_id")
   assert_json "$interrupted" '
     .state == "interrupted" and .attempt == 1 and .retryable == true
   '
-  retry_request=$(daemon_cli notarization "$crash_trace_id")
+  retry_request=$(daemon_cli traces notarize "$crash_trace_id")
   assert_json "$retry_request" '
     .deduplicated == false and
     .operation.operation_id == $operation_id and
@@ -1011,7 +1018,7 @@ if [[ $profile == full ]]; then
   ' --arg operation_id "$crash_operation_id"
   crash_final_state=""
   for _ in $(seq 1 90); do
-    crash_final_state=$(daemon_cli operation "$crash_operation_id")
+    crash_final_state=$(daemon_operation "$crash_operation_id")
     state=$(json_value "$crash_final_state" '.state')
     if [[ $state == succeeded ]]; then
       break
@@ -1036,7 +1043,7 @@ if [[ $profile == full ]]; then
     echo "retry replaced rather than reused the orphan package" >&2
     exit 1
   fi
-  crash_events=$(daemon_cli events --operation-id "$crash_operation_id" --all)
+  crash_events=$(daemon_cli activity --operation-id "$crash_operation_id" --all)
   assert_json "$crash_events" '
     ([.items[] | select(.event_type == "notarization_completed")] | length) == 1
   '
@@ -1095,7 +1102,7 @@ else
   fi
 fi
 
-persisted_operation=$(daemon_cli operation "$operation_id")
+persisted_operation=$(daemon_operation "$operation_id")
 assert_json "$persisted_operation" '
   .operation_id == $operation_id and
   .trace_id == "trc-e2e-notarize" and
@@ -1104,7 +1111,7 @@ assert_json "$persisted_operation" '
   .failure_code == $failure_code
 ' --arg operation_id "$operation_id" --arg failure_code "$expected_fixture_failure"
 
-persisted_trace=$(daemon_cli captures show trc-e2e-notarize)
+persisted_trace=$(daemon_cli traces show trc-e2e-notarize)
 assert_json "$persisted_trace" '
   .state == "captured" and
   .status == "notarization_failed" and
@@ -1113,7 +1120,7 @@ assert_json "$persisted_trace" '
 '
 
 if [[ $profile == full ]]; then
-  persisted_full_operation=$(daemon_cli operation "$full_operation_id")
+  persisted_full_operation=$(daemon_operation "$full_operation_id")
   assert_json "$persisted_full_operation" '
     .operation_id == $operation_id and
     .trace_id == $trace_id and
@@ -1122,7 +1129,7 @@ if [[ $profile == full ]]; then
     .progress.phase == "complete"
   ' --arg operation_id "$full_operation_id" --arg trace_id "$full_trace_id"
 
-  persisted_full_trace=$(daemon_cli captures show "$full_trace_id")
+  persisted_full_trace=$(daemon_cli traces show "$full_trace_id")
   assert_json "$persisted_full_trace" '
     .state == "notarized" and
     .status == null and
@@ -1145,13 +1152,13 @@ if [[ $profile == full ]]; then
     .trace_id == $trace_id and .outcome == "passed"
   ' --arg trace_id "$full_trace_id"
 
-  persisted_stream_operation=$(daemon_cli operation "$stream_operation_id")
+  persisted_stream_operation=$(daemon_operation "$stream_operation_id")
   assert_json "$persisted_stream_operation" '
     .operation_id == $operation_id and
     .trace_id == $trace_id and
     .state == "succeeded"
   ' --arg operation_id "$stream_operation_id" --arg trace_id "$stream_trace_id"
-  persisted_stream_trace=$(daemon_cli captures show "$stream_trace_id")
+  persisted_stream_trace=$(daemon_cli traces show "$stream_trace_id")
   assert_json "$persisted_stream_trace" '
     .streaming == true and
     .state == "notarized" and

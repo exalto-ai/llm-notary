@@ -2,7 +2,7 @@
 
 In the default local profile, one `notaryd` process owns the metadata store,
 vault, artifacts, and durable operation state. The short-lived
-`llm-notary` command talks to it through the versioned loopback API.
+`notaryctl` command talks to it through the versioned loopback API.
 `notaryd` owns two different loopback listeners:
 
 | Listener | Default | Purpose |
@@ -70,7 +70,7 @@ over
 its private child-process pipe. It does not send a kill signal as an update or
 normal stop mechanism.
 
-There is no compatibility alias: `llm-notary` does not start the service.
+There is no compatibility alias: `notaryctl` does not start the service.
 Service-manager `ExecStart`, launchd `ProgramArguments`, and Windows service
 definitions must invoke `notaryd`, optionally followed by `--config` and
 the configuration path.
@@ -282,17 +282,17 @@ password without echoing it. For automation, store the password in a private
 UTF-8 file and pass its path rather than the secret itself:
 
 ```bash
-llm-notary status
-llm-notary --admin-password-file /private/admin-password status
-llm-notary --config /path/to/config.toml captures list --metadata-only --json
+notaryctl status
+notaryctl --admin-password-file /private/admin-password status
+notaryctl --config /path/to/config.toml traces list --metadata-only --json
 ```
 
 On Unix, the password file must not be accessible to group or other users.
 The CLI never reads the Argon2id hash as though it were a password and never
 stores a prompted password.
 
-`llm-notary version`, `llm-notary update --check`, `llm-notary update`, and
-`llm-notary skill install` run before configuration loading and daemon
+`notaryctl version`, `notaryctl update --check`, `notaryctl update`, and
+`notaryctl skill install` run before configuration loading and daemon
 compatibility checks. This keeps release recovery and agent-skill installation
 available when the service is stopped or an installed pair has an incompatible
 API. Official daemons authenticate the signed `latest` channel and its
@@ -309,47 +309,45 @@ nonzero exit status and uses the bounded
 `{"error":{"code":"...","message":"..."}}` envelope without a duplicate
 plain-text diagnostic. List filters map directly to server-side REST filters,
 and accepted mutations print the durable operation or job identifier without
-waiting indefinitely. Capture-list JSON includes stored prompt and output
+waiting indefinitely. Trace-list JSON includes stored prompt and output
 previews; use `--metadata-only` before sending it to an agent transcript:
 
 ```bash
-llm-notary captures list --query sanitized --provider openai --limit 20
-llm-notary captures list --cursor "$next_cursor"
-llm-notary captures list --provider openai --all --metadata-only --json
-llm-notary captures show trc-example
-llm-notary notarize trc-example --wait
-llm-notary operations list --state failed --kind notarization
-llm-notary operations retry op-example
-llm-notary traces show trc-example --json
-llm-notary traces verify trc-example
-llm-notary events --severity error --limit 20
-llm-notary events --after "$high_water_cursor"
-llm-notary notaries list
-llm-notary skill install --target all
-llm-notary open
+notaryctl traces list --query sanitized --provider openai --limit 20
+notaryctl traces list --cursor "$next_cursor"
+notaryctl traces list --provider openai --all --metadata-only --json
+notaryctl traces show trc-example
+notaryctl traces notarize trc-example
+notaryctl traces show trc-example --json
+notaryctl traces verify trc-example
+notaryctl activity --severity error --limit 20
+notaryctl activity --after "$high_water_cursor"
+notaryctl notaries list
+notaryctl skill install --target all
+notaryctl open
 ```
 
-The skill installer writes the release's portable `llm-notary` skill to Codex,
+The skill installer writes the release's portable `notaryctl` skill to Codex,
 Claude Code, both, or a custom skills directory. It preflights every requested
 destination and refuses to replace different bundled files without `--force`.
 It does not contact the daemon. See the [coding-agent
 playbook](agent-playbook.md) for paths and consent boundaries.
 
-Sharing identity remains daemon-owned. Login, logout, account inspection,
-and sharing all use the local REST API, so only `notaryd` accesses the
-credential vault or notarized artifact:
+Sharing identity remains daemon-owned. Account connection, disconnection,
+inspection, and sharing all use the local REST API, so only `notaryd` accesses
+the credential vault or notarized artifact:
 
 ```bash
-llm-notary login
-llm-notary whoami
-llm-notary whoami --json
-llm-notary share trc-example                         # Unlisted by default
-llm-notary share trc-example --visibility listed
-llm-notary share trc-example --force                 # Only after disclosure review
-llm-notary logout
+notaryctl account connect
+notaryctl account show
+notaryctl account show --json
+notaryctl traces share trc-example                         # Unlisted by default
+notaryctl traces share trc-example --visibility listed
+notaryctl traces share trc-example --force                 # Only after disclosure review
+notaryctl account disconnect
 ```
 
-`whoami` reports an explicit connection state (`disconnected`, `connected`,
+`account show` reports an explicit connection state (`disconnected`, `connected`,
 `reauthorization_required`, or `unavailable`) and, when available, the display
 name, sign-in provider, device or API-key mode, plan, billing state, account
 links, and credit balances. Human output is intended for quick inspection;
@@ -566,7 +564,7 @@ Before it authenticates or uploads, the local service cryptographically verifies
 the exact notarized package and applies the same versioned public-disclosure
 safety policy used by hosted admission. The hosted worker repeats both checks;
 local acceptance never guarantees admission by a newer server policy.
-An explicit `force: true` request, exposed by `llm-notary share --force`, accepts
+An explicit `force: true` request, exposed by `notaryctl traces share --force`, accepts
 only unexplained high-entropy values after the user reviews the complete
 disclosure. It cannot override known secret patterns, credential fields,
 disclosed header values, signed credential queries, invalid archives, or failed

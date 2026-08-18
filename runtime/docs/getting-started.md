@@ -21,7 +21,7 @@ curl -fsSL https://notary.exalto.ai/install.sh | sh
 
 The installer selects the current complete `latest` build, verifies the selected
 archive against its published SHA-256 value, and places `notaryd` and
-`llm-notary` in `~/.local/bin`. Set `LLM_NOTARY_INSTALL_DIR` to choose another
+`notaryctl` in `~/.local/bin`. Set `LLM_NOTARY_INSTALL_DIR` to choose another
 destination. The checksum detects corruption in transit or storage; it is not
 an independent signature because the archive and checksum share a publisher.
 
@@ -31,9 +31,9 @@ remembers the highest signed channel revision it accepted, so replaying an
 older pointer cannot silently downgrade it:
 
 ```bash
-llm-notary version
-llm-notary update --check
-llm-notary update
+notaryctl version
+notaryctl update --check
+notaryctl update
 ```
 
 The build ID, not the package's pre-release `0.1.0` label or a timestamp,
@@ -52,7 +52,7 @@ To build from source instead, install Rust 1.95.0 and a C toolchain, then run:
 git clone https://github.com/exalto-ai/notary-runtime.git
 cd notary-runtime
 cargo install --locked --path crates/notaryd --bin notaryd
-cargo install --locked --path crates/llm-notary-cli --bin llm-notary
+cargo install --locked --path crates/notaryctl --bin notaryctl
 ```
 
 Node.js 24 and npm are needed only for dashboard development.
@@ -60,9 +60,9 @@ Node.js 24 and npm are needed only for dashboard development.
 The two installed programs have separate jobs:
 
 - `notaryd` is the long-running local proxy and administration daemon.
-- `llm-notary` is a short-lived REST client for that daemon.
+- `notaryctl` is a short-lived REST client for that daemon.
 
-`llm-notary` does not start the service and does not open the metadata store, vault,
+`notaryctl` does not start the service and does not open the metadata store, vault,
 or artifacts directly.
 
 ## Install the portable agent skill
@@ -75,19 +75,19 @@ actions. Installing the skill does not contact or start the daemon.
 Install it for one supported agent, or both:
 
 ```bash
-llm-notary skill install --target codex
-llm-notary skill install --target claude
-llm-notary skill install --target all
+notaryctl skill install --target codex
+notaryctl skill install --target claude
+notaryctl skill install --target all
 ```
 
-Codex receives it under `~/.agents/skills/llm-notary`. Claude Code receives it
-under `$CLAUDE_CONFIG_DIR/skills/llm-notary` when that environment variable is
-nonempty and under `~/.claude/skills/llm-notary` otherwise. For another
+Codex receives it under `~/.agents/skills/notary`. Claude Code receives it
+under `$CLAUDE_CONFIG_DIR/skills/notary` when that environment variable is
+nonempty and under `~/.claude/skills/notary` otherwise. For another
 compatible agent, provide its skills directory and the installer will create
-the `llm-notary` child:
+the `notaryctl` child:
 
 ```bash
-llm-notary skill install --skills-dir /path/to/agent/skills
+notaryctl skill install --skills-dir /path/to/agent/skills
 ```
 
 Claude Code detects changes inside its existing personal `skills` directory.
@@ -101,12 +101,12 @@ contains different bundled files, installation stops without changing any
 target. Inspect the existing skill before explicitly replacing those files:
 
 ```bash
-llm-notary skill install --target all --force
+notaryctl skill install --target all --force
 ```
 
 Re-run the install command after updating LLM Notary so the installed skill
 matches the local CLI. The portable source is committed at
-[`skills/llm-notary`](../skills/llm-notary/SKILL.md), and the
+[`skills/notary`](../skills/notary/SKILL.md), and the
 [coding-agent playbook](agent-playbook.md) explains its safety and consent
 boundaries.
 
@@ -138,7 +138,7 @@ Use an explicit file when developing isolated configurations:
 notaryd --config /path/to/config.toml
 ```
 
-Pass the same `--config` option to `llm-notary` commands.
+Pass the same `--config` option to `notaryctl` commands.
 
 ## Check the local service
 
@@ -147,7 +147,7 @@ Open [http://127.0.0.1:8788](http://127.0.0.1:8788), or query it directly:
 ```bash
 curl --fail-with-body http://127.0.0.1:8788/healthz
 curl --fail-with-body http://127.0.0.1:8788/openapi.json
-llm-notary status
+notaryctl status
 ```
 
 The administration API is open to other local processes by default. Configure
@@ -226,13 +226,14 @@ a proof.
 Find the Trace without decrypting every checkpoint:
 
 ```bash
-llm-notary captures list --provider openai --limit 20
-llm-notary captures show trc-example
+notaryctl traces list --provider openai --limit 20
+notaryctl traces show trc-example
 ```
 
-Human capture output omits stored prompt and output previews. For structured
-capture discovery that enters an agent transcript, use `llm-notary --json
-captures list --metadata-only`; raw capture-list JSON includes those previews.
+Human Trace output omits stored prompt and output previews. For structured
+discovery that enters an agent transcript, use
+`notaryctl --json traces list --metadata-only`; raw Trace-list JSON includes
+those previews.
 
 ## Notarize and verify
 
@@ -240,19 +241,20 @@ Only captured `2xx` responses are currently eligible for notarization.
 Notarization is asynchronous and can take much longer than capture:
 
 ```bash
-llm-notary notarize trc-example --wait
+notaryctl traces notarize trc-example --wait
 ```
 
-Without `--wait`, save the returned operation identifier and poll it while the
-operation is `queued` or `running`. With `--wait`, the CLI follows the operation
-and reports authenticated transcript bytes and completed commitments. Its
-terminal state is `succeeded`, `failed`, or `interrupted`. A successful
-operation writes one deterministic `<trace-id>.llmtrace` package and retains
-the encrypted checkpoint. `--json --wait` suppresses intermediate lines so standard
-output remains one JSON value.
+Without `--wait`, return to `notaryctl traces show trc-example` to inspect the
+latest notarization attempt while it is queued or running. With `--wait`, the
+CLI follows the attempt and reports authenticated transcript bytes and
+completed commitments. Its terminal state is `succeeded`, `failed`, or
+`interrupted`. A successful attempt writes one deterministic
+`<trace-id>.llmtrace` package and retains the encrypted checkpoint. `--json
+--wait` suppresses intermediate lines so standard output remains one JSON
+value.
 
 ```bash
-llm-notary traces verify trc-example
+notaryctl traces verify trc-example
 ```
 
 Verification checks the notary evidence, authenticated provider, disclosed
