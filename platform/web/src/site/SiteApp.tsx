@@ -442,7 +442,12 @@ export function SignInPage({
     };
   }, [loadProviders]);
   const requestedReturn = new URLSearchParams(route.split('?')[1] || '').get('return_to');
-  const returnTo = requestedReturn?.startsWith('#/authorize?') ? requestedReturn : null;
+  const returnTo =
+    requestedReturn?.startsWith('#/authorize?') ||
+    requestedReturn === '#/account' ||
+    requestedReturn?.startsWith('#/account/')
+      ? requestedReturn
+      : null;
   const providerHref = (provider: AuthProvider) =>
     `/api/auth/${provider}${returnTo ? `?return_to=${encodeURIComponent(returnTo)}` : ''}`;
   if (user)
@@ -989,10 +994,11 @@ export function App({
           : page === 'settings'
             ? 'Settings'
             : 'Account';
+    const sectionTitle = section === 'account' ? accountTitle : titles[section];
     document.title = directTraceId
       ? 'Shared trace · Notary by Exalto'
-      : section
-        ? `${section === 'account' ? accountTitle : (titles[section] ?? 'Notary')} · Notary by Exalto`
+      : sectionTitle
+        ? `${sectionTitle} · Notary by Exalto`
         : 'Notary by Exalto';
   }, [directTraceId, page, section]);
   return (
@@ -1029,7 +1035,7 @@ export function App({
           onAccountDeleted={accountDeleted}
         />
       ) : section === 'account' ? (
-        <SignInPage user={null} />
+        <SignInPage route={`signin?return_to=${encodeURIComponent(`#/${path}`)}`} user={null} />
       ) : isLegalPage(section) ? (
         <LegalPage pageKey={section} />
       ) : (

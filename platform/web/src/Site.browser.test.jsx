@@ -339,6 +339,18 @@ describe('hosted site', () => {
       .not.toBeInTheDocument();
   });
 
+  test('returns signed-out Account visitors to the requested Account route', async () => {
+    render(
+      <SignInPage
+        route="signin?return_to=%23%2Faccount%2Ftraces"
+        loadProviders={async () => ({ google: true, github: true })}
+      />,
+    );
+    await expect
+      .element(page.getByRole('link', { name: 'Continue with Google' }))
+      .toHaveAttribute('href', '/api/auth/google?return_to=%23%2Faccount%2Ftraces');
+  });
+
   test('shows only the configured sign-in provider', async () => {
     render(<SignInPage loadProviders={async () => ({ google: false, github: true })} />);
 

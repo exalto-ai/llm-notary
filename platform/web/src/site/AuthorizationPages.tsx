@@ -224,7 +224,9 @@ export function DeviceAuthorizationApproval({
           <p>This device will be able to:</p>
           <ul>
             {details.capabilities.map((capability) => (
-              <li key={capability}>{deviceCapabilityLabels[capability]}</li>
+              <li key={capability}>
+                {deviceCapabilityLabels[capability] || capability.replaceAll('_', ' ')}
+              </li>
             ))}
           </ul>
           <p>
