@@ -1662,7 +1662,7 @@ async fn get_trace_share(
     Ok(Json(TraceShare::from_record(record)))
 }
 
-#[utoipa::path(put, path = "/v1/traces/{trace_id}/share", summary = "Create or update a Trace share", description = "Idempotently creates, resumes, retries, or changes the Trace's one canonical share after local verification and disclosure-safety checks. The encrypted .llmcapture is never uploaded.", params(("trace_id" = String, Path)), request_body = PutTraceShareRequest, responses((status = 200, body = TraceShare), (status = 202, body = TraceShare), (status = 400, body = ErrorEnvelope), (status = 401, body = ErrorEnvelope), (status = 404, body = ErrorEnvelope), (status = 409, body = ErrorEnvelope), (status = 422, body = ErrorEnvelope), (status = 500, body = ErrorEnvelope), (status = 503, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
+#[utoipa::path(put, path = "/v1/traces/{trace_id}/share", summary = "Create or update a Trace share", description = "Idempotently creates, resumes, retries, or changes the Trace's one canonical share after local verification and disclosure-safety checks. The encrypted .llmcapture is never uploaded.", params(("trace_id" = String, Path)), request_body = PutTraceShareRequest, responses((status = 200, body = TraceShare), (status = 202, body = TraceShare), (status = 400, body = ErrorEnvelope), (status = 401, body = ErrorEnvelope), (status = 402, body = ErrorEnvelope), (status = 404, body = ErrorEnvelope), (status = 409, body = ErrorEnvelope), (status = 422, body = ErrorEnvelope), (status = 429, body = ErrorEnvelope), (status = 500, body = ErrorEnvelope), (status = 503, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
 async fn put_trace_share(
     State(state): State<AdminState>,
     Path(trace_id): Path<String>,
@@ -1839,6 +1839,7 @@ async fn load_share_registry(state: &AdminState) -> Result<Option<RegistrySnapsh
 fn share_status_api_error(error: sharing::ShareStatusError) -> ApiError {
     match error {
         sharing::ShareStatusError::Authentication => ApiError::account_authentication_required(),
+        sharing::ShareStatusError::Hosted(error) => hosted_share_api_error(error),
         sharing::ShareStatusError::NotFound => ApiError::not_found("trace_share_not_found"),
         sharing::ShareStatusError::Unavailable => {
             ApiError::service_unavailable("share_status_unavailable")
@@ -1847,18 +1848,40 @@ fn share_status_api_error(error: sharing::ShareStatusError) -> ApiError {
 }
 
 fn share_package_api_error(error: anyhow::Error) -> ApiError {
-    match error.downcast_ref::<PublicPackageSafetyError>() {
-        Some(safety) if safety.code == "high_entropy_value" => {
+    if let Some(safety) = error.downcast_ref::<PublicPackageSafetyError>() {
+        return if safety.code == "high_entropy_value" {
             ApiError::conflict("share_high_entropy_review_required")
+        } else {
+            ApiError::unprocessable("public_disclosure_rejected")
+        };
+    }
+    if let Some(error) = error
+        .downcast_ref::<sharing::HostedApiError>()
+        .and_then(sharing::HostedApiError::classified)
+    {
+        return hosted_share_api_error(error);
+    }
+    ApiError::internal("share_failed")
+}
+
+fn hosted_share_api_error(error: sharing::HostedShareError) -> ApiError {
+    use sharing::HostedShareError;
+
+    match error {
+        HostedShareError::BillingReview => ApiError::payment_required("billing_review"),
+        HostedShareError::StorageQuotaExceeded => {
+            ApiError::payment_required("trace_storage_quota_exceeded")
         }
-        Some(_) => ApiError::unprocessable("public_disclosure_rejected"),
-        None if error
-            .downcast_ref::<sharing::HostedApiError>()
-            .is_some_and(|error| error.code() == "trace_reactivation_required") =>
-        {
-            ApiError::conflict("trace_reactivation_required")
+        HostedShareError::PasswordCapacity => {
+            ApiError::too_many_requests("trace_password_capacity")
         }
-        None => ApiError::internal("share_failed"),
+        HostedShareError::PasswordRateLimited => {
+            ApiError::too_many_requests("trace_password_change_rate_limited")
+        }
+        HostedShareError::ReactivationExpiryRequired => {
+            ApiError::bad_request("trace_reactivation_expiry_required")
+        }
+        HostedShareError::ReactivationRequired => ApiError::conflict("trace_reactivation_required"),
     }
 }
 
@@ -3186,6 +3209,13 @@ impl ApiError {
             message: "The operation is not retryable",
         }
     }
+    fn payment_required(code: &'static str) -> Self {
+        Self {
+            status: StatusCode::PAYMENT_REQUIRED,
+            code,
+            message: "The hosted account cannot accept this Trace",
+        }
+    }
     fn artifact_conflict() -> Self {
         Self {
             status: StatusCode::CONFLICT,
@@ -3226,6 +3256,13 @@ impl ApiError {
             status: StatusCode::SERVICE_UNAVAILABLE,
             code,
             message: "A required service dependency is temporarily unavailable",
+        }
+    }
+    fn too_many_requests(code: &'static str) -> Self {
+        Self {
+            status: StatusCode::TOO_MANY_REQUESTS,
+            code,
+            message: "Too many hosted access changes were requested; try again shortly",
         }
     }
     fn internal(code: &'static str) -> Self {
@@ -3458,6 +3495,16 @@ mod tests {
             ExistingShareAction::Resume
         );
         assert_eq!(share.hosted_trace_id, "trc-hosted");
+
+        let quota = hosted_share_api_error(sharing::HostedShareError::StorageQuotaExceeded);
+        assert_eq!(quota.status, StatusCode::PAYMENT_REQUIRED);
+        assert_eq!(quota.code, "trace_storage_quota_exceeded");
+        let rate_limit = hosted_share_api_error(sharing::HostedShareError::PasswordRateLimited);
+        assert_eq!(rate_limit.status, StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(rate_limit.code, "trace_password_change_rate_limited");
+        let expiry = hosted_share_api_error(sharing::HostedShareError::ReactivationExpiryRequired);
+        assert_eq!(expiry.status, StatusCode::BAD_REQUEST);
+        assert_eq!(expiry.code, "trace_reactivation_expiry_required");
     }
 
     #[tokio::test]

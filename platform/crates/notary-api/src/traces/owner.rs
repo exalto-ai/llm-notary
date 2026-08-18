@@ -383,7 +383,11 @@ async fn create_hosted_trace(
     let expires_at_changed = request.expires_in_days.is_some();
     let access_expires_at = expires_at_from_days(request.expires_in_days, now)?;
     let password_changed = request.password.is_some();
-    if password_changed {
+    let password_needs_hashing = request
+        .password
+        .as_deref()
+        .is_some_and(|password| !password.is_empty());
+    if password_needs_hashing {
         enforce_password_change_limit(&state, &account_id, now).await?;
     }
     let access_password_hash = match request.password.as_deref() {
@@ -518,7 +522,9 @@ async fn create_hosted_trace(
             .is_some_and(|expires_at| expires_at <= now)
             && !expires_at_changed
         {
-            return Err(ApiError::bad_request(
+            return Err(ApiError::coded(
+                StatusCode::BAD_REQUEST,
+                "trace_reactivation_expiry_required",
                 "expires_in_days is required to reactivate an expired Trace",
             ));
         }
@@ -772,7 +778,11 @@ async fn update_trace_access(
     let expires_at_changed = request.expires_in_days.is_some();
     let expires_at = expires_at_from_days(request.expires_in_days, now)?;
     let password_changed = request.password.is_some();
-    if password_changed {
+    let password_needs_hashing = request
+        .password
+        .as_deref()
+        .is_some_and(|password| !password.is_empty());
+    if password_needs_hashing {
         enforce_password_change_limit(&state, &account_id, now).await?;
     }
     let password_hash = match request.password {
@@ -2574,6 +2584,23 @@ mod tests {
         let mut uppercase_hash = request();
         uppercase_hash.package_sha256 = SHA256.to_uppercase();
         assert!(validate_request(&service, &uppercase_hash).is_err());
+    }
+
+    #[tokio::test]
+    async fn empty_initial_password_does_not_consume_password_work_limit() {
+        let (state, _storage, headers, _) = test_state().await;
+        let mut no_password = request();
+        no_password.password = Some(String::new());
+        create_hosted_trace(State(state.clone()), headers, Json(no_password))
+            .await
+            .expect("create Trace without password protection");
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM trace_access_change_limits")
+                .fetch_one(&state.database)
+                .await
+                .expect("password work limit rows"),
+            0
+        );
     }
 
     #[tokio::test]

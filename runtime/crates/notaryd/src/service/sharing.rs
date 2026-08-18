@@ -118,8 +118,42 @@ pub(crate) struct HostedApiError {
 }
 
 impl HostedApiError {
-    pub(crate) fn code(&self) -> &str {
-        &self.code
+    pub(crate) fn classified(&self) -> Option<HostedShareError> {
+        HostedShareError::classify(self.status, &self.code)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum HostedShareError {
+    BillingReview,
+    PasswordCapacity,
+    PasswordRateLimited,
+    ReactivationExpiryRequired,
+    ReactivationRequired,
+    StorageQuotaExceeded,
+}
+
+impl HostedShareError {
+    fn classify(status: StatusCode, code: &str) -> Option<Self> {
+        match (status, code) {
+            (StatusCode::PAYMENT_REQUIRED, "billing_review") => Some(Self::BillingReview),
+            (StatusCode::PAYMENT_REQUIRED, "trace_storage_quota_exceeded") => {
+                Some(Self::StorageQuotaExceeded)
+            }
+            (StatusCode::TOO_MANY_REQUESTS, "trace_password_capacity") => {
+                Some(Self::PasswordCapacity)
+            }
+            (StatusCode::TOO_MANY_REQUESTS, "trace_password_change_rate_limited") => {
+                Some(Self::PasswordRateLimited)
+            }
+            (StatusCode::BAD_REQUEST, "trace_reactivation_expiry_required") => {
+                Some(Self::ReactivationExpiryRequired)
+            }
+            (StatusCode::CONFLICT, "trace_reactivation_required") => {
+                Some(Self::ReactivationRequired)
+            }
+            _ => None,
+        }
     }
 }
 
@@ -161,6 +195,7 @@ pub(crate) struct ShareStatus {
 #[derive(Debug)]
 pub(crate) enum ShareStatusError {
     Authentication,
+    Hosted(HostedShareError),
     NotFound,
     Unavailable,
 }
@@ -293,9 +328,7 @@ async fn share_status_with_authenticated(
         .send()
         .await
         .map_err(|_| ShareStatusError::Unavailable)?;
-    if let Some(error) = share_status_http_error(response.status()) {
-        return Err(error);
-    }
+    let response = share_mutation_response(response).await?;
     let trace = response
         .json::<HostedTrace>()
         .await
@@ -360,9 +393,7 @@ pub(crate) async fn stop_sharing(
         .send()
         .await
         .map_err(|_| ShareStatusError::Unavailable)?;
-    if let Some(error) = share_status_http_error(response.status()) {
-        return Err(error);
-    }
+    share_mutation_response(response).await?;
     Ok(())
 }
 
@@ -392,9 +423,7 @@ async fn update_share_settings_with_authenticated(
         .send()
         .await
         .map_err(|_| ShareStatusError::Unavailable)?;
-    if let Some(error) = share_status_http_error(response.status()) {
-        return Err(error);
-    }
+    let response = share_mutation_response(response).await?;
     let trace = response
         .json::<HostedTrace>()
         .await
@@ -435,6 +464,27 @@ fn share_status_http_error(status: StatusCode) -> Option<ShareStatusError> {
         StatusCode::UNAUTHORIZED => Some(ShareStatusError::Authentication),
         status if !status.is_success() => Some(ShareStatusError::Unavailable),
         _ => None,
+    }
+}
+
+async fn share_mutation_response(
+    response: Response,
+) -> std::result::Result<Response, ShareStatusError> {
+    let status = response.status();
+    match status {
+        StatusCode::NOT_FOUND => return Err(ShareStatusError::NotFound),
+        StatusCode::UNAUTHORIZED => return Err(ShareStatusError::Authentication),
+        status if status.is_success() => return Ok(response),
+        _ => {}
+    }
+    let code = response
+        .json::<ApiErrorResponse>()
+        .await
+        .map(|body| body.error)
+        .map_err(|_| ShareStatusError::Unavailable)?;
+    match HostedShareError::classify(status, &code) {
+        Some(error) => Err(ShareStatusError::Hosted(error)),
+        None => Err(ShareStatusError::Unavailable),
     }
 }
 
@@ -952,5 +1002,22 @@ mod tests {
             Some(ShareStatusError::Unavailable)
         ));
         assert!(share_status_http_error(StatusCode::OK).is_none());
+        assert_eq!(
+            HostedShareError::classify(
+                StatusCode::PAYMENT_REQUIRED,
+                "trace_storage_quota_exceeded",
+            ),
+            Some(HostedShareError::StorageQuotaExceeded)
+        );
+        assert_eq!(
+            HostedShareError::classify(
+                StatusCode::TOO_MANY_REQUESTS,
+                "trace_password_change_rate_limited",
+            ),
+            Some(HostedShareError::PasswordRateLimited)
+        );
+        assert!(
+            HostedShareError::classify(StatusCode::BAD_GATEWAY, "untrusted_remote_code").is_none()
+        );
     }
 }

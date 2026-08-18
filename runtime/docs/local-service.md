@@ -591,7 +591,9 @@ changing the local Notarized Trace. Its response retains the canonical hosted
 identity in a disabled state. Editing access settings does not republish it;
 `PUT` with `reactivate: true` is the explicit resume operation. If the retained
 expiration has elapsed, the resume request must also choose a new expiration
-or clear it with `expires_in_days: 0`.
+or clear it with `expires_in_days: 0`. Hosted storage or billing limits retain
+their safe `402` error code, password-work limits return `429`, and a missing
+replacement expiration returns `400 trace_reactivation_expiry_required`.
 
 ## Local trust boundary
 
