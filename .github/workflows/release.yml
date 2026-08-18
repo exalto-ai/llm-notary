@@ -347,7 +347,7 @@ jobs:
               *.sha256) content_type='text/plain; charset=utf-8' ;;
               *.sig) content_type='text/plain; charset=utf-8' ;;
               *.json) content_type='application/json; charset=utf-8' ;;
-              llm-notary-*|notaryd-*) content_type=application/octet-stream ;;
+              notaryctl-*|notaryd-*) content_type=application/octet-stream ;;
               *) echo "unexpected release file: $name" >&2; exit 1 ;;
             esac
             uploaded=false
