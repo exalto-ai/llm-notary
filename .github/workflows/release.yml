@@ -309,9 +309,17 @@ jobs:
           test -s release/LLM-Notary-macos-arm64.app.tar.gz.sig
           test -s release/release.json.sig
           test -s release/channel.json
-          test "$(jq -r .build_id release/release.json)" = "${GITHUB_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          build_id="$(jq -er .build_id release/release.json)"
+          build_prefix="${GITHUB_SHA}-${GITHUB_RUN_ID}-"
+          case "$build_id" in
+            "$build_prefix"*) artifact_attempt="${build_id#"$build_prefix"}" ;;
+            *) echo "release build does not belong to this workflow run" >&2; exit 1 ;;
+          esac
+          case "$artifact_attempt" in
+            ""|*[!0-9]*) echo "release build has an invalid attempt" >&2; exit 1 ;;
+          esac
+          test "$artifact_attempt" -gt 0
           test "$(jq -r .schema_version release/channel.json)" = "llm-notary/release-channel-envelope/v1"
-          build_id="${GITHUB_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           prefix="cli/builds/$build_id"
           {
             echo "version=$version"
@@ -389,8 +397,17 @@ jobs:
             "$PUBLIC_BUCKET_ORIGIN/$PREFIX/channel.json" \
             -o "$RUNNER_TEMP/public-release/channel.json"
           cmp release/channel.json "$RUNNER_TEMP/public-release/channel.json"
-          sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends minisign
+          if ! command -v minisign >/dev/null 2>&1; then
+            # Hosted runners already carry package indexes. Refreshing every
+            # mirror here can consume the entire publish timeout when one
+            # Ubuntu mirror is unhealthy, after immutable files are uploaded
+            # but before the signed channel pointer moves.
+            sudo apt-get \
+              -o Acquire::Retries=2 \
+              -o Acquire::http::Timeout=15 \
+              -o Acquire::https::Timeout=15 \
+              install --yes --no-install-recommends minisign
+          fi
           base64 --decode runtime/config/updater-public-key.txt > "$RUNNER_TEMP/updater.pub"
           base64 --decode "$RUNNER_TEMP/public-release/release.json.sig" > "$RUNNER_TEMP/release.minisig"
           minisign -Vm "$RUNNER_TEMP/public-release/release.json" \
