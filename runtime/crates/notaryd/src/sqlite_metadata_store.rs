@@ -469,7 +469,7 @@ mod tests {
         connection
             .execute_batch(
                 "CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY);
-                 INSERT INTO schema_migrations(version) VALUES (1), (2);",
+                 INSERT INTO schema_migrations(version) VALUES (1), (3);",
             )
             .unwrap();
         drop(connection);

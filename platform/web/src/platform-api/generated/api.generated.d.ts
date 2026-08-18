@@ -953,6 +953,8 @@ export interface components {
             package_size_bytes: number;
             /** @description Optional initial access password. The value is accepted only in this body. */
             password?: string | null;
+            /** @description Explicitly restore public access when this source Trace was stopped. */
+            reactivate?: boolean;
             source_trace_id: string;
             visibility: components["schemas"]["TraceVisibility"];
         };

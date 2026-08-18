@@ -203,10 +203,10 @@ async fn usage(
     };
     let credits = credits::account_access(&state, &account_id).await?;
     let operations = account_notary_stats(&state.database, &account_id).await?;
-    let (total, admitted, in_progress, needs_attention, stored_bytes) =
+    let (total, shared, in_progress, needs_attention, stored_bytes) =
         sqlx::query_as::<_, (i64, i64, i64, i64, i64)>(
             "SELECT COUNT(*)::BIGINT,
-                COUNT(*) FILTER (WHERE status IN ('shared', 'stopped'))::BIGINT,
+                COUNT(*) FILTER (WHERE status = 'shared')::BIGINT,
                 COUNT(*) FILTER (
                     WHERE status IN ('uploading', 'queued', 'verifying')
                 )::BIGINT,
@@ -229,7 +229,7 @@ async fn usage(
         operations,
         hosted_traces: HostedTraceUsage {
             total,
-            shared: admitted,
+            shared,
             verifying: in_progress,
             needs_attention,
             stored_bytes,

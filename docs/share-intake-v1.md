@@ -44,7 +44,8 @@ Content-Type: application/json
   "visibility": "unlisted",
   "password": null,
   "expires_in_days": null,
-  "allow_high_entropy": false
+  "allow_high_entropy": false,
+  "reactivate": false
 }
 ```
 
@@ -61,8 +62,10 @@ decision and whether the worker actually applied an override.
 
 The source Trace ID is the stable account-scoped identity. An identical retry
 returns the same hosted Trace. Reusing it with different package metadata
-returns `409 Conflict`. While an upload is open, the response also includes a
-short-lived private upload capability:
+returns `409 Conflict`. A stopped Trace remains stopped unless the request sets
+`reactivate: true`; an elapsed expiry must also be replaced or explicitly
+cleared with `expires_in_days: 0`. While an upload is open, the response also
+includes a short-lived private upload capability:
 
 ```json
 {
@@ -157,7 +160,7 @@ Fields are optional, but at least one is required. An empty password removes
 password protection; `expires_in_days: 0` removes the deadline. Password
 changes are rate-limited. `DELETE /api/traces/{trace_id}/share` immediately
 stops public access while retaining the verified artifacts. Creating the same
-source Trace again can resume sharing at the stable URL.
+source Trace again with `reactivate: true` resumes sharing at the stable URL.
 
 ## Storage lifecycle
 

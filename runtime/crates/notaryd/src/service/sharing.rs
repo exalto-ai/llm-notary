@@ -49,6 +49,7 @@ struct CreateHostedTrace<'a> {
     password: Option<&'a str>,
     expires_in_days: Option<u32>,
     allow_high_entropy: bool,
+    reactivate: bool,
 }
 
 #[derive(Deserialize)]
@@ -108,6 +109,20 @@ struct ApiErrorResponse {
     error: String,
 }
 
+#[derive(Debug, thiserror::Error)]
+#[error("{action} failed with HTTP {status}: {code}")]
+pub(crate) struct HostedApiError {
+    action: &'static str,
+    status: StatusCode,
+    code: String,
+}
+
+impl HostedApiError {
+    pub(crate) fn code(&self) -> &str {
+        &self.code
+    }
+}
+
 fn validate_hosted_trace_identity(trace: &HostedTrace, expected: Option<&str>) -> Result<()> {
     crate::metadata_store::validate_trace_id(&trace.trace_id)
         .context("hosted API returned an invalid Trace identifier")?;
@@ -159,6 +174,7 @@ pub(crate) async fn share_package_bytes(
     password: Option<&str>,
     expires_in_days: Option<u32>,
     force: bool,
+    reactivate: bool,
 ) -> Result<(ShareOutput, String, String)> {
     let embedded_key = trace_package_notary_key_bytes(archive)
         .context("validating notarized .llmtrace; nothing was uploaded")?;
@@ -217,6 +233,7 @@ pub(crate) async fn share_package_bytes(
         password,
         expires_in_days,
         allow_high_entropy: force,
+        reactivate,
     };
     let share = submit_archive(&authenticated, archive, &idempotency_key, &request).await?;
     let status_url = absolute_status_url(&authenticated.origin, &share.status_url)?;
@@ -597,7 +614,7 @@ fn is_loopback_host(url: &url::Url) -> bool {
     })
 }
 
-async fn api_json<T: DeserializeOwned>(response: Response, action: &str) -> Result<T> {
+async fn api_json<T: DeserializeOwned>(response: Response, action: &'static str) -> Result<T> {
     let status = response.status();
     if status.is_success() {
         return response
@@ -621,7 +638,12 @@ async fn api_json<T: DeserializeOwned>(response: Response, action: &str) -> Resu
             "{action} failed: {message}; connect an account through the local dashboard or administration API"
         );
     }
-    bail!("{action} failed with HTTP {status}: {message}")
+    Err(HostedApiError {
+        action,
+        status,
+        code: message,
+    }
+    .into())
 }
 
 fn absolute_status_url(origin: &ApiOrigin, status_url: &str) -> Result<String> {
@@ -733,6 +755,7 @@ mod tests {
             assert!(headers.contains_key("idempotency-key"));
             assert_eq!(request["visibility"], "unlisted");
             assert_eq!(request["allow_high_entropy"], true);
+            assert_eq!(request["reactivate"], false);
             assert_eq!(request["source_trace_id"], "trc-source");
             assert_eq!(request["package_format"], TRACE_PACKAGE_FORMAT);
             let size = request["package_size_bytes"].as_u64().unwrap();
@@ -804,6 +827,7 @@ mod tests {
             password: None,
             expires_in_days: None,
             allow_high_entropy: true,
+            reactivate: false,
         };
         let result = submit_archive(&authenticated, archive, "idempotency-key", &request)
             .await

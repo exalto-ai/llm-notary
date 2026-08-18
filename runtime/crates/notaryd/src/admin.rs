@@ -1754,6 +1754,7 @@ async fn submit_trace_share(
         body.password.as_ref().map(SecretInput::expose),
         body.expires_in_days,
         body.force,
+        body.reactivate,
     )
     .await
     .map_err(share_package_api_error)?;
@@ -1801,10 +1802,11 @@ async fn delete_trace_share(
         }
         Err(error) => return Err(share_status_api_error(error)),
     }
-    let status = sharing::share_status(&stored.hosted_trace_id)
-        .await
-        .map_err(share_status_api_error)?;
-    let record = trace_share_record_from_status(trace_id, status)?;
+    let mut record = stored;
+    record.progress = ShareProgress::Stopped.as_str().to_owned();
+    record.access_enabled = false;
+    record.share_url = None;
+    record.updated_at_unix_ms = now_ms().map_err(|_| ApiError::internal("clock_invalid"))?;
     state
         .persistence
         .metadata
@@ -1849,6 +1851,12 @@ fn share_package_api_error(error: anyhow::Error) -> ApiError {
             ApiError::conflict("share_high_entropy_review_required")
         }
         Some(_) => ApiError::unprocessable("public_disclosure_rejected"),
+        None if error
+            .downcast_ref::<sharing::HostedApiError>()
+            .is_some_and(|error| error.code() == "trace_reactivation_required") =>
+        {
+            ApiError::conflict("trace_reactivation_required")
+        }
         None => ApiError::internal("share_failed"),
     }
 }

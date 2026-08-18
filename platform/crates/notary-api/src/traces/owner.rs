@@ -70,6 +70,9 @@ pub struct CreateHostedTraceRequest {
     /// Accept unexplained high-entropy values after reviewing the disclosure.
     #[serde(default)]
     allow_high_entropy: bool,
+    /// Explicitly restore public access when this source Trace was stopped.
+    #[serde(default)]
+    reactivate: bool,
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -503,6 +506,13 @@ async fn create_hosted_trace(
         job = load_trace_by_source(&state, &account_id, &request.source_trace_id).await?;
     }
     if job.status == "stopped" && job.package_object_key.is_some() {
+        if !request.reactivate {
+            return Err(ApiError::coded(
+                StatusCode::CONFLICT,
+                "trace_reactivation_required",
+                "reactivate must be true to restore public access to a stopped Trace",
+            ));
+        }
         if job
             .access_expires_at
             .is_some_and(|expires_at| expires_at <= now)
@@ -1648,6 +1658,7 @@ mod tests {
             password: None,
             expires_in_days: None,
             allow_high_entropy: false,
+            reactivate: false,
         }
     }
 
@@ -2250,6 +2261,23 @@ mod tests {
             .await
             .expect("stopped Trace");
 
+        let mut implicit = request();
+        implicit.visibility = TraceVisibility::Unlisted;
+        implicit.password = Some(String::new());
+        implicit.expires_in_days = Some(0);
+        let rejected = create_hosted_trace(State(state.clone()), headers.clone(), Json(implicit))
+            .await
+            .expect_err("stopped Trace must require explicit reactivation");
+        assert_eq!(rejected.status, StatusCode::CONFLICT);
+        assert_eq!(rejected.code, "trace_reactivation_required");
+        let unchanged: HostedTraceRow = sqlx::query_as("SELECT * FROM traces")
+            .fetch_one(&state.database)
+            .await
+            .expect("unchanged stopped Trace");
+        assert_eq!(unchanged.status, "stopped");
+        assert_eq!(unchanged.access_password_hash, stopped.access_password_hash);
+        assert_eq!(unchanged.access_expires_at, stopped.access_expires_at);
+
         sqlx::query("UPDATE traces SET created_at = 1, access_expires_at = $1")
             .bind(unix_timestamp().unwrap() - 1)
             .execute(&state.database)
@@ -2257,6 +2285,7 @@ mod tests {
             .expect("expire stopped Trace");
         let mut expired_request = request();
         expired_request.visibility = TraceVisibility::Unlisted;
+        expired_request.reactivate = true;
         let expired =
             create_hosted_trace(State(state.clone()), headers.clone(), Json(expired_request))
                 .await
@@ -2269,6 +2298,7 @@ mod tests {
             .expect("restore active expiration");
         let mut keep = request();
         keep.visibility = TraceVisibility::Unlisted;
+        keep.reactivate = true;
         create_hosted_trace(State(state.clone()), headers.clone(), Json(keep))
             .await
             .expect("reactivate while keeping controls");
@@ -2289,6 +2319,7 @@ mod tests {
         let mut clear = request();
         clear.password = Some(String::new());
         clear.expires_in_days = Some(0);
+        clear.reactivate = true;
         create_hosted_trace(State(state.clone()), headers, Json(clear))
             .await
             .expect("reactivate with explicit clears");

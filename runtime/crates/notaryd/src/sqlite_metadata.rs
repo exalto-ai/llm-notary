@@ -12,7 +12,7 @@ use crate::metadata::{
     TraceSummary, trace_search_expression,
 };
 
-const METADATA_SCHEMA_VERSION: i64 = 1;
+const METADATA_SCHEMA_VERSION: i64 = 2;
 
 /// A single-process SQLite capture inventory.
 pub(crate) struct SqliteMetadata {
@@ -1260,15 +1260,58 @@ fn migrate(connection: &mut Connection) -> Result<()> {
         [],
         |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Option<i64>>(1)?)),
     )?;
-    if migration_count != 0 {
-        anyhow::ensure!(
-            migration_count == 1 && version == Some(METADATA_SCHEMA_VERSION),
-            "SQLite metadata uses an unsupported pre-cutover or newer schema"
-        );
-        return validate_schema(connection);
-    }
+    anyhow::ensure!(
+        matches!(
+            (migration_count, version),
+            (0, None) | (1, Some(1)) | (2, Some(2))
+        ),
+        "SQLite metadata uses an unsupported pre-cutover or newer schema"
+    );
 
-    let transaction = connection.transaction()?;
+    if migration_count == 0 {
+        let transaction = connection.transaction()?;
+        apply_initial_migration(&transaction)?;
+        transaction.execute("INSERT INTO schema_migrations(version) VALUES (1)", [])?;
+        transaction.commit()?;
+    }
+    if version.unwrap_or(1) == 1 {
+        let transaction = connection.transaction()?;
+        transaction.execute_batch(
+            "ALTER TABLE trace_shares RENAME TO trace_shares_v1;
+             CREATE TABLE trace_shares (
+                trace_id TEXT PRIMARY KEY REFERENCES traces(trace_id) ON DELETE CASCADE,
+                hosted_trace_id TEXT NOT NULL UNIQUE CHECK (length(hosted_trace_id) BETWEEN 1 AND 256),
+                progress TEXT NOT NULL CHECK (
+                    progress IN ('verifying', 'shared', 'stopped', 'rejected', 'failed')
+                ),
+                visibility TEXT NOT NULL CHECK (visibility IN ('listed', 'unlisted')),
+                access_enabled INTEGER NOT NULL CHECK (access_enabled IN (0, 1)),
+                password_protected INTEGER NOT NULL CHECK (password_protected IN (0, 1)),
+                expires_at_unix_ms INTEGER,
+                failure_code TEXT,
+                share_url TEXT,
+                package_url TEXT,
+                updated_at_unix_ms INTEGER NOT NULL
+             );
+             INSERT INTO trace_shares (
+                trace_id, hosted_trace_id, progress, visibility, access_enabled,
+                password_protected, expires_at_unix_ms, failure_code, share_url,
+                package_url, updated_at_unix_ms
+             )
+             SELECT trace_id, hosted_trace_id,
+                    CASE WHEN progress IN ('preparing', 'uploading') THEN 'verifying' ELSE progress END,
+                    visibility, access_enabled, password_protected, expires_at_unix_ms,
+                    failure_code, share_url, package_url, updated_at_unix_ms
+             FROM trace_shares_v1;
+             DROP TABLE trace_shares_v1;
+             INSERT INTO schema_migrations(version) VALUES (2);",
+        )?;
+        transaction.commit()?;
+    }
+    validate_schema(connection)
+}
+
+fn apply_initial_migration(transaction: &rusqlite::Transaction<'_>) -> Result<()> {
     transaction.execute_batch(
         "CREATE TABLE traces (
                 trace_id TEXT PRIMARY KEY CHECK (
@@ -1381,7 +1424,7 @@ fn migrate(connection: &mut Connection) -> Result<()> {
                 trace_id TEXT PRIMARY KEY REFERENCES traces(trace_id) ON DELETE CASCADE,
                 hosted_trace_id TEXT NOT NULL UNIQUE CHECK (length(hosted_trace_id) BETWEEN 1 AND 256),
                 progress TEXT NOT NULL CHECK (
-                    progress IN ('verifying', 'shared', 'stopped', 'rejected', 'failed')
+                    progress IN ('preparing', 'uploading', 'verifying', 'shared', 'rejected', 'failed')
                 ),
                 visibility TEXT NOT NULL CHECK (visibility IN ('listed', 'unlisted')),
                 access_enabled INTEGER NOT NULL CHECK (access_enabled IN (0, 1)),
@@ -1398,9 +1441,7 @@ fn migrate(connection: &mut Connection) -> Result<()> {
             );
             INSERT INTO settings (singleton, capture_enabled) VALUES (1, 1);",
     )?;
-    transaction.execute("INSERT INTO schema_migrations(version) VALUES (1)", [])?;
-    transaction.commit()?;
-    validate_schema(connection)
+    Ok(())
 }
 
 fn validate_schema(connection: &Connection) -> Result<()> {
@@ -1751,7 +1792,7 @@ mod tests {
         connection
             .execute_batch(
                 "CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY);
-                 INSERT INTO schema_migrations(version) VALUES (1), (2);",
+                 INSERT INTO schema_migrations(version) VALUES (1), (3);",
             )
             .unwrap();
         drop(connection);
@@ -1761,6 +1802,65 @@ mod tests {
             Err(error) => error,
         };
         assert!(error.to_string().contains("unsupported pre-cutover"));
+    }
+
+    #[test]
+    fn migrates_v1_trace_share_progress_and_accepts_stopped() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("metadata.db");
+        let mut connection = Connection::open(&path).unwrap();
+        connection
+            .execute_batch(
+                "PRAGMA foreign_keys = ON;
+                 CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY);",
+            )
+            .unwrap();
+        let transaction = connection.transaction().unwrap();
+        apply_initial_migration(&transaction).unwrap();
+        transaction
+            .execute("INSERT INTO schema_migrations(version) VALUES (1)", [])
+            .unwrap();
+        transaction
+            .execute_batch(
+                "INSERT INTO traces (
+                    trace_id, created_at_unix_ms, provider, operation, streaming,
+                    request_bytes, prompt_preview, prompt_preview_truncated,
+                    config_fingerprint, capture_status, notarization_status
+                 ) VALUES (
+                    'trc-upgrade', 1, 'test', 'chat', 0,
+                    1, '', 0, 'fingerprint', 'captured', 'succeeded'
+                 );
+                 INSERT INTO trace_shares (
+                    trace_id, hosted_trace_id, progress, visibility, access_enabled,
+                    password_protected, updated_at_unix_ms
+                 ) VALUES (
+                    'trc-upgrade', 'trc-hosted', 'uploading', 'unlisted', 0, 0, 1
+                 );",
+            )
+            .unwrap();
+        transaction.commit().unwrap();
+        drop(connection);
+
+        let metadata = SqliteMetadata::open(&path, true).unwrap();
+        let connection = metadata.connection.lock().unwrap();
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT progress FROM trace_shares WHERE trace_id = 'trc-upgrade'",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+            "verifying"
+        );
+        connection
+            .execute(
+                "UPDATE trace_shares SET progress = 'stopped' WHERE trace_id = 'trc-upgrade'",
+                [],
+            )
+            .unwrap();
+        drop(connection);
+        metadata.readiness().unwrap();
     }
 
     #[test]
