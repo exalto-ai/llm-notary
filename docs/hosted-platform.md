@@ -150,7 +150,7 @@ review.
 | API keys | `GET /api/api-keys`, `POST /api/api-keys`, `DELETE /api/api-keys/{api_key_id}` |
 | Admission and settlement | `POST /api/notary/admissions`, `POST /api/internal/notary/admissions/redeem`, `POST /api/internal/notary/operations/activate`, `POST /api/internal/notary/operations/settle` |
 | Billing and credits | `POST /api/billing/stripe/webhook`, `POST /api/billing/checkout-sessions`, `POST /api/billing/subscription-checkout-sessions`, `POST /api/billing/portal-sessions`, `GET /api/billing/purchases`, `GET /api/billing/purchases/{purchase_id}`, `GET /api/credit-offers`, `POST /api/credit-offers/{offer_id}/claim`, `GET /api/credits/history` |
-| Hosted Trace submission and owner management | `POST /api/traces`, `GET /api/traces`, `GET /api/traces/{trace_id}`, `POST /api/traces/{trace_id}/upload-completion`, `PATCH /api/traces/{trace_id}`, `DELETE /api/traces/{trace_id}/share` |
+| Hosted Trace submission and owner management | `POST /api/traces`, `GET /api/traces`, `GET /api/traces/{trace_id}`, `GET /api/traces/{trace_id}/package.llmtrace`, `POST /api/traces/{trace_id}/upload-completion`, `PATCH /api/traces/{trace_id}`, `DELETE /api/traces/{trace_id}/share` |
 | Public Traces and Trace access | `GET /api/public/traces`, `GET /api/public/traces/{trace_id}`, `POST /api/public/traces/{trace_id}/access`, `GET /api/public/traces/{trace_id}/content`, `GET /api/public/traces/{trace_id}/trace.otlp.json`, `GET /api/public/traces/{trace_id}/package.llmtrace`, `POST /api/public/traces/{trace_id}/reports` |
 | Retention-free verification | `POST /api/verify` |
 

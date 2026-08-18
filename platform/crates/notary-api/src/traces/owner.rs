@@ -241,9 +241,64 @@ pub fn router() -> OpenApiRouter<NotaryApiState> {
     OpenApiRouter::new()
         .routes(routes!(create_hosted_trace))
         .routes(routes!(get_hosted_trace, update_trace_access))
+        .routes(routes!(download_owned_trace_package))
         .routes(routes!(list_web_traces))
         .routes(routes!(complete_hosted_trace_upload))
         .routes(routes!(stop_hosted_trace_sharing))
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/traces/{trace_id}/package.llmtrace",
+    summary = "Download an owned exact verified portable proof package",
+    params(("trace_id" = String, Path)),
+    responses(
+        (status = 200, body = Vec<u8>, content_type = "application/vnd.exalto.notary.trace-package+zip"),
+        (status = 401, body = crate::ErrorResponse),
+        (status = 403, body = crate::ErrorResponse),
+        (status = 404, body = crate::ErrorResponse),
+        (status = 409, body = crate::ErrorResponse),
+        (status = 500, body = crate::ErrorResponse),
+        (status = 503, body = crate::ErrorResponse)
+    ),
+    security(("bearerAuth" = ["traces:read"]), ("browserSession" = [])),
+    tag = "traces"
+)]
+async fn download_owned_trace_package(
+    State(state): State<NotaryApiState>,
+    headers: HeaderMap,
+    jar: CookieJar,
+    Path(trace_id): Path<String>,
+) -> ApiResult<Response> {
+    require_enabled(&state)?;
+    let account_id = if headers.contains_key(axum::http::header::AUTHORIZATION) {
+        authenticated_principal(&state, &headers, ApiScope::TracesRead)
+            .await?
+            .account_id
+    } else {
+        authenticated_web_user(&state, &jar).await?.0
+    };
+    let trace = load_owned_trace(&state, &account_id, &trace_id).await?;
+    let (object_key, size_bytes, sha256) = match (
+        trace.package_object_key.as_deref(),
+        trace.admitted_package_size_bytes,
+        trace.admitted_package_sha256.as_deref(),
+    ) {
+        (Some(key), Some(size), Some(sha256)) if size > 0 => (key, size, sha256),
+        _ => {
+            return Err(ApiError::conflict(
+                "hosted Trace package is not ready for export",
+            ));
+        }
+    };
+    let bytes = super::public::load_public_bytes(&state, object_key, size_bytes, sha256).await?;
+    Ok(super::public::public_bytes(
+        bytes,
+        super::storage::ARCHIVE_CONTENT_TYPE,
+        sha256,
+        Some(&format!("{trace_id}.llmtrace")),
+        "unlisted",
+    ))
 }
 
 pub(crate) async fn run_cleanup_worker(state: NotaryApiState, mut shutdown: watch::Receiver<bool>) {
@@ -320,7 +375,9 @@ async fn create_hosted_trace(
         crate::credits::plan_entitlements(&state.admission, billing.plan).trace_storage_bytes;
     let idempotency_key = idempotency_key(&headers)?;
     let now = unix_timestamp()?;
+    let expires_at_changed = request.expires_in_days.is_some();
     let access_expires_at = expires_at_from_days(request.expires_in_days, now)?;
+    let password_changed = request.password.is_some();
     let access_password_hash = match request.password.as_deref() {
         Some("") | None => None,
         Some(_) => Some(hash_trace_access_password(request.password.clone().unwrap()).await?),
@@ -420,10 +477,17 @@ async fn create_hosted_trace(
     transaction.commit().await.map_err(database_error)?;
 
     let mut job = load_trace_by_source(&state, &account_id, &request.source_trace_id).await?;
+    let entropy_override_retry = job.status == "rejected"
+        && !job.allow_high_entropy
+        && request.allow_high_entropy
+        && job
+            .failure_code
+            .as_deref()
+            .is_some_and(|code| code.starts_with("high_entropy_value_"));
     if job.package_format != request.package_format
         || job.declared_package_size_bytes != request.package_size_bytes
         || job.declared_package_sha256 != request.package_sha256
-        || job.allow_high_entropy != request.allow_high_entropy
+        || (job.allow_high_entropy != request.allow_high_entropy && !entropy_override_retry)
     {
         return Err(ApiError::conflict(
             "idempotency key was already used with different package metadata",
@@ -436,14 +500,18 @@ async fn create_hosted_trace(
     if job.status == "stopped" && job.package_object_key.is_some() {
         sqlx::query(
             "UPDATE traces
-             SET status = 'shared', visibility = $1, access_expires_at = $2,
-                 access_password_hash = $3, updated_at = $4
-             WHERE trace_id = $5 AND account_id = $6 AND status = 'stopped'
+             SET status = 'shared', visibility = $1,
+                 access_expires_at = CASE WHEN $2 THEN $3 ELSE access_expires_at END,
+                 access_password_hash = CASE WHEN $4 THEN $5 ELSE access_password_hash END,
+                 updated_at = $6
+             WHERE trace_id = $7 AND account_id = $8 AND status = 'stopped'
                AND content_object_key IS NOT NULL AND package_object_key IS NOT NULL",
         )
         .bind(request.visibility.as_str())
+        .bind(expires_at_changed)
         .bind(access_expires_at)
-        .bind(access_password_hash)
+        .bind(password_changed)
+        .bind(&access_password_hash)
         .bind(now)
         .bind(&job.trace_id)
         .bind(&account_id)
@@ -453,7 +521,9 @@ async fn create_hosted_trace(
         job = load_trace_by_source(&state, &account_id, &request.source_trace_id).await?;
     }
     let mut reopened = false;
-    if job.status == "failed" && job.failure_code.as_deref() == Some("upload_expired") {
+    if (job.status == "failed" && job.failure_code.as_deref() == Some("upload_expired"))
+        || entropy_override_retry
+    {
         let retry_upload_key = state
             .traces
             .storage
@@ -470,8 +540,8 @@ async fn create_hosted_trace(
             .execute(&mut *reopen_transaction)
             .await
             .map_err(database_error)?;
-        let current = sqlx::query_as::<_, (String, i64)>(
-            "SELECT status, upload_generation FROM traces
+        let current = sqlx::query_as::<_, (String, i64, Option<String>, bool)>(
+            "SELECT status, upload_generation, failure_code, allow_high_entropy FROM traces
              WHERE trace_id = $1 AND account_id = $2 FOR UPDATE",
         )
         .bind(&job.trace_id)
@@ -479,9 +549,15 @@ async fn create_hosted_trace(
         .fetch_one(&mut *reopen_transaction)
         .await
         .map_err(database_error)?;
-        if current.0 == "failed"
-            && let Some(storage_limit) = storage_limit
-        {
+        let retryable = (current.0 == "failed" && current.2.as_deref() == Some("upload_expired"))
+            || (current.0 == "rejected"
+                && !current.3
+                && request.allow_high_entropy
+                && current
+                    .2
+                    .as_deref()
+                    .is_some_and(|code| code.starts_with("high_entropy_value_")));
+        if retryable && let Some(storage_limit) = storage_limit {
             let stored_bytes: i64 = sqlx::query_scalar(
                 "SELECT COALESCE(SUM(declared_package_size_bytes), 0)::BIGINT FROM traces
                  WHERE account_id = $1
@@ -503,14 +579,27 @@ async fn create_hosted_trace(
             "UPDATE traces
              SET status = 'uploading', staging_object_key = $1, committed_staging_object_key = $2,
                  upload_expires_at = $3, upload_generation = upload_generation + 1,
-                 updated_at = $4, failure_code = NULL
-             WHERE trace_id = $5 AND account_id = $6 AND status = 'failed'
-               AND failure_code = 'upload_expired'
-               AND upload_generation = $7",
+                 visibility = $4,
+                 access_expires_at = CASE WHEN $5 THEN $6 ELSE access_expires_at END,
+                 access_password_hash = CASE WHEN $7 THEN $8 ELSE access_password_hash END,
+                 allow_high_entropy = $9,
+                 admitted_package_size_bytes = NULL, admitted_package_sha256 = NULL,
+                 staging_purged_at = NULL, updated_at = $10, failure_code = NULL
+             WHERE trace_id = $11 AND account_id = $12
+               AND ((status = 'failed' AND failure_code = 'upload_expired')
+                    OR (status = 'rejected' AND failure_code LIKE 'high_entropy_value_%'
+                        AND allow_high_entropy = FALSE AND $9 = TRUE))
+               AND upload_generation = $13",
         )
         .bind(retry_upload_key)
         .bind(retry_committed_staging_key)
         .bind(upload_expires_at)
+        .bind(request.visibility.as_str())
+        .bind(expires_at_changed)
+        .bind(access_expires_at)
+        .bind(password_changed)
+        .bind(&access_password_hash)
+        .bind(request.allow_high_entropy)
         .bind(now)
         .bind(&job.trace_id)
         .bind(&account_id)
@@ -2077,7 +2166,11 @@ mod tests {
             .await
             .expect("expire upload");
 
-        let response = create_hosted_trace(State(state.clone()), headers, Json(request()))
+        let mut retry = request();
+        retry.visibility = TraceVisibility::Listed;
+        retry.password = Some("replacement-password".to_owned());
+        retry.expires_in_days = Some(30);
+        let response = create_hosted_trace(State(state.clone()), headers, Json(retry))
             .await
             .expect("retry expired upload");
         assert_eq!(response.status(), StatusCode::CREATED);
@@ -2087,6 +2180,9 @@ mod tests {
             .expect("retried job");
         assert_eq!(retried.trace_id, first.trace_id);
         assert_eq!(retried.status, "uploading");
+        assert_eq!(retried.visibility, "listed");
+        assert!(retried.access_password_hash.is_some());
+        assert!(retried.access_expires_at.is_some_and(|expiry| expiry > 1));
         assert_ne!(retried.staging_object_key, first.staging_object_key);
         assert!(retried.upload_expires_at > 1);
         assert_eq!(
@@ -2102,6 +2198,170 @@ mod tests {
                 .lock()
                 .expect("mock lock")
                 .contains(&first.staging_object_key)
+        );
+    }
+
+    #[tokio::test]
+    async fn stopped_reactivation_uses_patch_semantics_for_access_controls() {
+        let (state, _storage, headers, _) = test_state().await;
+        let mut initial = request();
+        initial.visibility = TraceVisibility::Listed;
+        initial.password = Some("initial-password".to_owned());
+        initial.expires_in_days = Some(7);
+        create_hosted_trace(State(state.clone()), headers.clone(), Json(initial))
+            .await
+            .expect("create protected Trace");
+        sqlx::query(
+            "UPDATE traces SET status = 'stopped',
+             verified_at = 1,
+             admitted_package_size_bytes = declared_package_size_bytes,
+             admitted_package_sha256 = declared_package_sha256,
+             package_object_key = 'package-key',
+             package_size_bytes = declared_package_size_bytes,
+             package_sha256 = declared_package_sha256,
+             content_object_key = 'content-key', content_size_bytes = 1,
+             content_sha256 = $1, disclosure_safety_version = $2",
+        )
+        .bind("b".repeat(64))
+        .bind(notary_core::public_safety::PUBLIC_PACKAGE_SAFETY_VERSION)
+        .execute(&state.database)
+        .await
+        .expect("prepare stopped Trace");
+        let stopped: HostedTraceRow = sqlx::query_as("SELECT * FROM traces")
+            .fetch_one(&state.database)
+            .await
+            .expect("stopped Trace");
+
+        let mut keep = request();
+        keep.visibility = TraceVisibility::Unlisted;
+        create_hosted_trace(State(state.clone()), headers.clone(), Json(keep))
+            .await
+            .expect("reactivate while keeping controls");
+        let kept: HostedTraceRow = sqlx::query_as("SELECT * FROM traces")
+            .fetch_one(&state.database)
+            .await
+            .expect("reactivated Trace");
+        assert_eq!(kept.trace_id, stopped.trace_id);
+        assert_eq!(kept.status, "shared");
+        assert_eq!(kept.visibility, "unlisted");
+        assert_eq!(kept.access_password_hash, stopped.access_password_hash);
+        assert_eq!(kept.access_expires_at, stopped.access_expires_at);
+
+        sqlx::query("UPDATE traces SET status = 'stopped'")
+            .execute(&state.database)
+            .await
+            .expect("stop again");
+        let mut clear = request();
+        clear.password = Some(String::new());
+        clear.expires_in_days = Some(0);
+        create_hosted_trace(State(state.clone()), headers, Json(clear))
+            .await
+            .expect("reactivate with explicit clears");
+        let cleared: HostedTraceRow = sqlx::query_as("SELECT * FROM traces")
+            .fetch_one(&state.database)
+            .await
+            .expect("cleared Trace");
+        assert_eq!(cleared.status, "shared");
+        assert!(cleared.access_password_hash.is_none());
+        assert!(cleared.access_expires_at.is_none());
+    }
+
+    #[tokio::test]
+    async fn reviewed_high_entropy_rejection_can_reopen_one_upload_attempt() {
+        let (state, _storage, headers, _) = test_state().await;
+        create_hosted_trace(State(state.clone()), headers.clone(), Json(request()))
+            .await
+            .expect("create hosted Trace");
+        let original: HostedTraceRow = sqlx::query_as("SELECT * FROM traces")
+            .fetch_one(&state.database)
+            .await
+            .expect("original upload");
+        sqlx::query(
+            "UPDATE traces
+             SET status = 'rejected', failure_code = 'high_entropy_value_trace',
+                 admitted_package_size_bytes = declared_package_size_bytes,
+                 admitted_package_sha256 = declared_package_sha256,
+                 staging_purged_at = 1
+             WHERE trace_id = $1",
+        )
+        .bind(&original.trace_id)
+        .execute(&state.database)
+        .await
+        .expect("reject high-entropy package");
+
+        let mut forced = request();
+        forced.allow_high_entropy = true;
+        let response = create_hosted_trace(State(state.clone()), headers, Json(forced))
+            .await
+            .expect("reopen reviewed upload");
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let reopened: HostedTraceRow = sqlx::query_as("SELECT * FROM traces")
+            .fetch_one(&state.database)
+            .await
+            .expect("reopened upload");
+        assert_eq!(reopened.trace_id, original.trace_id);
+        assert_eq!(reopened.status, "uploading");
+        assert!(reopened.allow_high_entropy);
+        assert_eq!(reopened.upload_generation, original.upload_generation + 1);
+        assert!(reopened.admitted_package_size_bytes.is_none());
+        assert!(reopened.admitted_package_sha256.is_none());
+        assert_ne!(reopened.staging_object_key, original.staging_object_key);
+    }
+
+    #[tokio::test]
+    async fn owner_package_export_returns_exact_bytes_without_public_access() {
+        let (state, storage, headers, _) = test_state().await;
+        create_hosted_trace(State(state.clone()), headers.clone(), Json(request()))
+            .await
+            .expect("create hosted Trace");
+        let trace: HostedTraceRow = sqlx::query_as("SELECT * FROM traces")
+            .fetch_one(&state.database)
+            .await
+            .expect("hosted Trace row");
+        let package = b"exact owner package bytes".to_vec();
+        let sha256 = notary_core::sha256_hex(&package);
+        let object_key = "account/user-1/packages/owner-package.llmtrace";
+        storage.object_bytes(object_key, package.clone());
+        sqlx::query(
+            "UPDATE traces
+             SET status = 'stopped', package_object_key = $1,
+                 admitted_package_size_bytes = $2, admitted_package_sha256 = $3,
+                 package_size_bytes = $2, package_sha256 = $3,
+                 verified_at = 1,
+                 content_object_key = 'owner-content', content_size_bytes = 1,
+                 content_sha256 = $5, disclosure_safety_version = $6,
+                 access_password_hash = 'protected'
+             WHERE trace_id = $4",
+        )
+        .bind(object_key)
+        .bind(i64::try_from(package.len()).unwrap())
+        .bind(&sha256)
+        .bind(&trace.trace_id)
+        .bind("b".repeat(64))
+        .bind(notary_core::public_safety::PUBLIC_PACKAGE_SAFETY_VERSION)
+        .execute(&state.database)
+        .await
+        .expect("prepare owned package");
+
+        let response = download_owned_trace_package(
+            State(state),
+            headers,
+            CookieJar::new(),
+            Path(trace.trace_id.clone()),
+        )
+        .await
+        .expect("download owned package");
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()["x-content-sha256"], sha256);
+        assert_eq!(
+            response.headers()[axum::http::header::CONTENT_DISPOSITION],
+            format!("attachment; filename=\"{}.llmtrace\"", trace.trace_id)
+        );
+        assert_eq!(
+            axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .expect("package body"),
+            package
         );
     }
 

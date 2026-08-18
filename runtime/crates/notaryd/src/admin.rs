@@ -1601,26 +1601,33 @@ struct PutTraceShareRequest {
     /// Accept only reviewed, unexplained high-entropy safety findings.
     #[serde(default)]
     force: bool,
+    /// Explicitly restore public access to a stopped canonical share. Access
+    /// settings can be edited without reactivating it when this is false.
+    #[serde(default)]
+    reactivate: bool,
 }
 
 #[derive(Debug, PartialEq, Eq)]
 enum ExistingShareAction {
     Resume,
     UpdateAccess,
-    Refresh,
 }
 
-fn existing_share_action(share: &TraceShareRecord) -> ExistingShareAction {
-    if share.progress == "failed" || !share.access_enabled {
+fn existing_share_action(
+    share: &TraceShareRecord,
+    request: &PutTraceShareRequest,
+) -> ExistingShareAction {
+    if share.progress == "failed"
+        || (share.progress == "rejected" && request.force)
+        || (!share.access_enabled && request.reactivate)
+    {
         ExistingShareAction::Resume
-    } else if share.progress == "shared" {
-        ExistingShareAction::UpdateAccess
     } else {
-        ExistingShareAction::Refresh
+        ExistingShareAction::UpdateAccess
     }
 }
 
-#[utoipa::path(get, path = "/v1/traces/{trace_id}/share", summary = "Get a Trace share", description = "Returns the current canonical share's safe access and progress state. Hosted intake and presigned upload URLs are never exposed.", params(("trace_id" = String, Path)), responses((status = 200, body = TraceShare), (status = 401, body = ErrorEnvelope), (status = 404, body = ErrorEnvelope), (status = 503, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
+#[utoipa::path(get, path = "/v1/traces/{trace_id}/share", summary = "Get a Trace share", description = "Returns the current canonical share's safe access and progress state. Hosted intake and presigned upload URLs are never exposed.", params(("trace_id" = String, Path)), responses((status = 200, body = TraceShare), (status = 401, body = ErrorEnvelope), (status = 404, body = ErrorEnvelope), (status = 409, body = ErrorEnvelope), (status = 503, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
 async fn get_trace_share(
     State(state): State<AdminState>,
     Path(trace_id): Path<String>,
@@ -1637,13 +1644,10 @@ async fn get_trace_share(
     let status = match sharing::share_status(&stored.hosted_trace_id).await {
         Ok(status) => status,
         Err(sharing::ShareStatusError::NotFound) => {
-            state
-                .persistence
-                .metadata
-                .delete_trace_share(&trace_id)
-                .await
-                .map_err(|_| ApiError::internal("metadata_update_failed"))?;
-            return Err(ApiError::not_found("trace_share_not_found"));
+            // Hosted ownership is deliberately masked as 404. Retain the
+            // canonical association so connecting a different Account cannot
+            // create a second active URL for the same local Trace.
+            return Err(ApiError::conflict("trace_share_account_mismatch"));
         }
         Err(error) => return Err(share_status_api_error(error)),
     };
@@ -1682,11 +1686,13 @@ async fn put_trace_share(
         .map_err(|_| ApiError::internal("metadata_query_failed"))?;
     let mut accepted = false;
     let record = match existing {
-        Some(existing) if existing_share_action(&existing) == ExistingShareAction::Resume => {
+        Some(existing)
+            if existing_share_action(&existing, &body) == ExistingShareAction::Resume =>
+        {
             accepted = true;
             submit_trace_share(&state, &trace_id, &body, Some(&existing.hosted_trace_id)).await?
         }
-        Some(existing) if existing_share_action(&existing) == ExistingShareAction::UpdateAccess => {
+        Some(existing) => {
             let status = sharing::update_share_settings(
                 &existing.hosted_trace_id,
                 Some(body.visibility.into()),
@@ -1696,24 +1702,6 @@ async fn put_trace_share(
             .await
             .map_err(share_status_api_error)?;
             trace_share_record_from_status(trace_id.clone(), status)?
-        }
-        Some(existing) => {
-            let status = sharing::share_status(&existing.hosted_trace_id)
-                .await
-                .map_err(share_status_api_error)?;
-            if status.state == sharing::HostedTraceStatus::Shared && status.access_enabled {
-                let status = sharing::update_share_settings(
-                    &existing.hosted_trace_id,
-                    Some(body.visibility.into()),
-                    body.password.as_ref().map(SecretInput::expose),
-                    body.expires_in_days,
-                )
-                .await
-                .map_err(share_status_api_error)?;
-                trace_share_record_from_status(trace_id.clone(), status)?
-            } else {
-                trace_share_record_from_status(trace_id.clone(), status)?
-            }
         }
         None => {
             accepted = true;
@@ -1743,6 +1731,18 @@ async fn submit_trace_share(
     body: &PutTraceShareRequest,
     expected_hosted_trace_id: Option<&str>,
 ) -> Result<TraceShareRecord, ApiError> {
+    if let Some(expected) = expected_hosted_trace_id {
+        match sharing::share_status(expected).await {
+            Ok(_) => {}
+            Err(sharing::ShareStatusError::NotFound) => {
+                // Check ownership before the idempotent create endpoint. Its
+                // source identity is Account-scoped, so a different Account
+                // could otherwise create a second live hosted Trace.
+                return Err(ApiError::conflict("trace_share_account_mismatch"));
+            }
+            Err(error) => return Err(share_status_api_error(error)),
+        }
+    }
     let bytes = trace_package_bytes(&state.persistence, trace_id).await?;
     let shared_trust = load_share_registry(state).await?;
     let (share, verified_trace_id, _) = sharing::share_package_bytes(
@@ -1777,11 +1777,11 @@ async fn submit_trace_share(
     )
 }
 
-#[utoipa::path(delete, path = "/v1/traces/{trace_id}/share", summary = "Stop sharing a Trace", description = "Stops public access to the canonical share without deleting or changing the local Notarized Trace.", params(("trace_id" = String, Path)), responses((status = 204, description = "Sharing stopped"), (status = 401, body = ErrorEnvelope), (status = 503, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
+#[utoipa::path(delete, path = "/v1/traces/{trace_id}/share", summary = "Stop sharing a Trace", description = "Stops public access while retaining the canonical hosted identity for an explicit later resume.", params(("trace_id" = String, Path)), responses((status = 200, body = TraceShare), (status = 401, body = ErrorEnvelope), (status = 404, body = ErrorEnvelope), (status = 409, body = ErrorEnvelope), (status = 503, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
 async fn delete_trace_share(
     State(state): State<AdminState>,
     Path(trace_id): Path<String>,
-) -> Result<StatusCode, ApiError> {
+) -> Result<Json<TraceShare>, ApiError> {
     validate_id(&trace_id, "trc-")?;
     let Some(stored) = state
         .persistence
@@ -1790,20 +1790,27 @@ async fn delete_trace_share(
         .await
         .map_err(|_| ApiError::internal("metadata_query_failed"))?
     else {
-        return Ok(StatusCode::NO_CONTENT);
+        return Err(ApiError::not_found("trace_share_not_found"));
     };
     let _credentials = state.account_credentials.lock().await;
     match sharing::stop_sharing(&stored.hosted_trace_id).await {
-        Ok(_) | Err(sharing::ShareStatusError::NotFound) => {}
+        Ok(_) => {}
+        Err(sharing::ShareStatusError::NotFound) => {
+            return Err(ApiError::conflict("trace_share_account_mismatch"));
+        }
         Err(error) => return Err(share_status_api_error(error)),
     }
+    let status = sharing::share_status(&stored.hosted_trace_id)
+        .await
+        .map_err(share_status_api_error)?;
+    let record = trace_share_record_from_status(trace_id, status)?;
     state
         .persistence
         .metadata
-        .delete_trace_share(&trace_id)
+        .put_trace_share(record.clone())
         .await
         .map_err(|_| ApiError::internal("metadata_update_failed"))?;
-    Ok(StatusCode::NO_CONTENT)
+    Ok(Json(TraceShare::from_record(record)))
 }
 
 async fn load_share_registry(state: &AdminState) -> Result<Option<RegistrySnapshot>, ApiError> {
@@ -3014,8 +3021,6 @@ struct AccountConnectionStartedResponse {
 #[derive(Clone, Copy, Debug, Serialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 enum ShareProgress {
-    Preparing,
-    Uploading,
     Verifying,
     Shared,
     Rejected,
@@ -3036,8 +3041,6 @@ impl ShareProgress {
 
     fn as_str(self) -> &'static str {
         match self {
-            Self::Preparing => "preparing",
-            Self::Uploading => "uploading",
             Self::Verifying => "verifying",
             Self::Shared => "shared",
             Self::Rejected => "rejected",
@@ -3065,8 +3068,6 @@ impl TraceShare {
         Self {
             trace_id: record.trace_id,
             progress: match record.progress.as_str() {
-                "preparing" => ShareProgress::Preparing,
-                "uploading" => ShareProgress::Uploading,
                 "verifying" => ShareProgress::Verifying,
                 "shared" => ShareProgress::Shared,
                 "rejected" => ShareProgress::Rejected,
@@ -3378,20 +3379,60 @@ mod tests {
             package_url: None,
             updated_at_unix_ms: 1,
         };
-        assert_eq!(existing_share_action(&share), ExistingShareAction::Refresh);
+        let request = PutTraceShareRequest {
+            visibility: ShareVisibility::Unlisted,
+            expires_in_days: None,
+            password: None,
+            force: false,
+            reactivate: false,
+        };
+        assert_eq!(
+            existing_share_action(&share, &request),
+            ExistingShareAction::UpdateAccess
+        );
 
         share.progress = "shared".into();
         assert_eq!(
-            existing_share_action(&share),
+            existing_share_action(&share, &request),
             ExistingShareAction::UpdateAccess
         );
 
         share.progress = "failed".into();
-        assert_eq!(existing_share_action(&share), ExistingShareAction::Resume);
+        assert_eq!(
+            existing_share_action(&share, &request),
+            ExistingShareAction::Resume
+        );
+
+        share.progress = "rejected".into();
+        let force = PutTraceShareRequest {
+            visibility: ShareVisibility::Unlisted,
+            expires_in_days: None,
+            password: None,
+            force: true,
+            reactivate: false,
+        };
+        assert_eq!(
+            existing_share_action(&share, &force),
+            ExistingShareAction::Resume
+        );
 
         share.progress = "shared".into();
         share.access_enabled = false;
-        assert_eq!(existing_share_action(&share), ExistingShareAction::Resume);
+        assert_eq!(
+            existing_share_action(&share, &request),
+            ExistingShareAction::UpdateAccess
+        );
+        let resume = PutTraceShareRequest {
+            visibility: ShareVisibility::Unlisted,
+            expires_in_days: None,
+            password: None,
+            force: false,
+            reactivate: true,
+        };
+        assert_eq!(
+            existing_share_action(&share, &resume),
+            ExistingShareAction::Resume
+        );
         assert_eq!(share.hosted_trace_id, "trc-hosted");
     }
 

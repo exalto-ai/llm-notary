@@ -1822,7 +1822,9 @@ describe('hosted site', () => {
       .toBeVisible();
     await expect.element(page.getByRole('link', { name: 'Open' })).toBeVisible();
     await expect.element(page.getByRole('button', { name: 'Copy link' })).toBeVisible();
-    await expect.element(page.getByRole('link', { name: 'Export .llmtrace' })).toBeVisible();
+    await expect
+      .element(page.getByRole('link', { name: 'Export .llmtrace' }))
+      .toHaveAttribute('href', '/api/traces/share-managed/package.llmtrace');
     await page.getByRole('button', { name: 'Manage access' }).click();
     const dialogBounds = page.getByRole('dialog').element().getBoundingClientRect();
     const visibilityWidth = page

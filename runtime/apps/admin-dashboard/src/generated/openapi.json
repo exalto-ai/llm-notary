@@ -1368,6 +1368,16 @@
               }
             }
           },
+          "409": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
           "503": {
             "description": "",
             "content": {
@@ -1507,7 +1517,7 @@
           "local-admin"
         ],
         "summary": "Stop sharing a Trace",
-        "description": "Stops public access to the canonical share without deleting or changing the local Notarized Trace.",
+        "description": "Stops public access while retaining the canonical hosted identity for an explicit later resume.",
         "operationId": "delete_trace_share",
         "parameters": [
           {
@@ -1520,10 +1530,37 @@
           }
         ],
         "responses": {
-          "204": {
-            "description": "Sharing stopped"
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TraceShare"
+                }
+              }
+            }
           },
           "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "409": {
             "description": "",
             "content": {
               "application/json": {
@@ -2440,6 +2477,10 @@
             "maxLength": 128,
             "minLength": 0
           },
+          "reactivate": {
+            "type": "boolean",
+            "description": "Explicitly restore public access to a stopped canonical share. Access\nsettings can be edited without reactivating it when this is false."
+          },
           "visibility": {
             "$ref": "#/components/schemas/ShareVisibility"
           }
@@ -2472,8 +2513,6 @@
       "ShareProgress": {
         "type": "string",
         "enum": [
-          "preparing",
-          "uploading",
           "verifying",
           "shared",
           "rejected",

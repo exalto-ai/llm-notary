@@ -3154,6 +3154,112 @@
         ]
       }
     },
+    "/api/traces/{trace_id}/package.llmtrace": {
+      "get": {
+        "tags": [
+          "traces"
+        ],
+        "summary": "Download an owned exact verified portable proof package",
+        "operationId": "download_owned_trace_package",
+        "parameters": [
+          {
+            "name": "trace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/vnd.exalto.notary.trace-package+zip": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "integer",
+                    "format": "int32",
+                    "minimum": 0
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": [
+              "traces:read"
+            ]
+          },
+          {
+            "browserSession": []
+          }
+        ]
+      }
+    },
     "/api/traces/{trace_id}/share": {
       "delete": {
         "tags": [
@@ -4647,9 +4753,14 @@
           "total",
           "shared",
           "verifying",
+          "needs_attention",
           "stored_bytes"
         ],
         "properties": {
+          "needs_attention": {
+            "type": "integer",
+            "format": "int64"
+          },
           "shared": {
             "type": "integer",
             "format": "int64"

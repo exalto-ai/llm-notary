@@ -572,18 +572,22 @@ disclosure. It cannot override known secret patterns, credential fields,
 disclosed header values, signed credential queries, invalid archives, or failed
 cryptographic verification.
 After submission, poll `GET /v1/traces/{trace_id}/share` on the local admin
-listener. Progress is `preparing`, `uploading`, `verifying`, `shared`,
+listener. Persisted progress is `verifying`, `shared`,
 `rejected`, or `failed`. The safe response includes `access_enabled`, visibility,
 expiry, and access URLs but never an intake or presigned upload URL. The service
 uses the vault-held account credential
 to fetch admission state; agents and the dashboard never receive that
-credential. A missing share returns `404`; missing or expired account
-authorization returns `409`; a temporary platform or network failure returns
-`503` rather than pretending the share disappeared. A shared response
+credential. A missing local share returns `404`. If the connected Account does
+not own the retained canonical hosted identity, status and mutation return
+`409` without deleting the association or creating a second public URL.
+Missing or expired account authorization also returns `409`; a temporary
+platform or network failure returns `503` rather than pretending the share disappeared. A shared response
 contains the stable `share_url` and exact public `package_url`. Anyone with an
 Unlisted or Listed link can read the disclosure; this is not private access.
 `DELETE /v1/traces/{trace_id}/share` stops public access without deleting or
-changing the local Notarized Trace; repeated deletion is safe.
+changing the local Notarized Trace. Its response retains the canonical hosted
+identity in a disabled state. Editing access settings does not republish it;
+`PUT` with `reactivate: true` is the explicit resume operation.
 
 ## Local trust boundary
 

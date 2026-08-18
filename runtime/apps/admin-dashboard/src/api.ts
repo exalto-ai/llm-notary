@@ -158,7 +158,7 @@ export const localApi = {
   shareStatus: (traceId: string) =>
     request<Share>(`/v1/traces/${encodeURIComponent(traceId)}/share`),
   stopSharing: (traceId: string) =>
-    request<void>(`/v1/traces/${encodeURIComponent(traceId)}/share`, { method: 'DELETE' }),
+    request<Share>(`/v1/traces/${encodeURIComponent(traceId)}/share`, { method: 'DELETE' }),
 };
 
 export type LocalApi = typeof localApi;

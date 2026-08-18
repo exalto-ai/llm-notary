@@ -19,7 +19,7 @@ const fixtureNow = Date.UTC(2026, 6, 28, 16, 42, 0);
 
 type FixtureShareState = {
   captureId: string;
-  progress: 'preparing' | 'uploading' | 'verifying' | 'shared' | 'rejected' | 'failed';
+  progress: 'verifying' | 'shared' | 'rejected' | 'failed';
   visibility: ShareVisibility;
   accessEnabled: boolean;
   passwordProtected: boolean;
@@ -1204,9 +1204,12 @@ export function createFixtureApi({
       const updatedAt = actionTimestamp();
       const share: FixtureShareState = {
         captureId,
-        progress: previous?.progress === 'shared' ? 'shared' : 'preparing',
+        progress: previous?.progress === 'shared' ? 'shared' : 'verifying',
         visibility: settings.visibility,
-        accessEnabled: true,
+        accessEnabled:
+          previous?.progress === 'shared' && previous.accessEnabled === false
+            ? Boolean(settings.reactivate)
+            : true,
         passwordProtected:
           settings.password == null
             ? (previous?.passwordProtected ?? false)
@@ -1228,14 +1231,18 @@ export function createFixtureApi({
       if (!entry) throw new LocalApiError(404, 'share_not_found', 'Share not found');
       const [shareId, share] = entry;
       const result = fixtureShare(shareId, share);
-      if (share.progress === 'preparing') share.progress = 'verifying';
-      else if (share.progress === 'verifying') share.progress = 'shared';
+      if (share.progress === 'verifying') share.progress = 'shared';
       share.updatedAt = actionTimestamp();
       return result;
     },
     stopSharing: async (captureId) => {
       const entry = [...shares.entries()].find(([, share]) => share.captureId === captureId);
-      if (entry) shares.delete(entry[0]);
+      if (!entry) throw new LocalApiError(404, 'share_not_found', 'Share not found');
+      const [shareId, share] = entry;
+      share.accessEnabled = false;
+      share.progress = 'shared';
+      share.updatedAt = actionTimestamp();
+      return fixtureShare(shareId, share);
     },
   };
 }

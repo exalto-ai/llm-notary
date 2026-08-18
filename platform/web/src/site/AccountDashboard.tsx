@@ -1164,6 +1164,16 @@ export function Dashboard({
   }, [revokeTarget, revoking]);
 
   useEffect(() => {
+    if (!copiedTraceId) return undefined;
+    const copied = copiedTraceId;
+    const timer = window.setTimeout(
+      () => setCopiedTraceId((current) => (current === copied ? null : current)),
+      2_000,
+    );
+    return () => window.clearTimeout(timer);
+  }, [copiedTraceId]);
+
+  useEffect(() => {
     let cancelled = false;
     loadHostedTraces({ limit: 20 })
       .then((page) => {
@@ -1363,8 +1373,7 @@ export function Dashboard({
   };
 
   const sharedCount = user.usage.hosted_traces.shared;
-  const traceAttentionCount =
-    shares?.filter((trace) => trace.status === 'rejected' || trace.status === 'failed').length || 0;
+  const traceAttentionCount = user.usage.hosted_traces.needs_attention;
   const needsAttention =
     billing.billing_status === 'review'
       ? { href: '#/account/usage', value: 'Billing' }
@@ -1898,7 +1907,10 @@ export function Dashboard({
                               </button>
                             )}
                             {share.package_url && (
-                              <a href={share.package_url} download>
+                              <a
+                                href={`/api/traces/${encodeURIComponent(share.trace_id)}/package.llmtrace`}
+                                download
+                              >
                                 Export .llmtrace
                               </a>
                             )}
