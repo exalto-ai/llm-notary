@@ -56,7 +56,7 @@ jobs:
               - 'Cargo.toml'
               - 'Cargo.lock'
               - 'platform/crates/notary-api/**'
-              - 'runtime/apps/local-dashboard/**'
+              - 'runtime/apps/admin-dashboard/**'
               - 'runtime/crates/notaryd/**'
               - 'js/app/**'
               - 'js/desktop/src-tauri/tauri.release.conf.json'
@@ -80,8 +80,8 @@ jobs:
               - 'runtime/AGENTS.md'
               - 'runtime/docs/**'
               - 'runtime/skills/**'
-              - 'runtime/apps/local-dashboard/scripts/check-local-docs.mjs'
-              - 'runtime/apps/local-dashboard/src/generated/openapi.json'
+              - 'runtime/apps/admin-dashboard/scripts/check-local-docs.mjs'
+              - 'runtime/apps/admin-dashboard/src/generated/openapi.json'
             containers:
               - '.github/workflows/ci.yml'
               - '.github/workflows/deploy.yml'
@@ -230,13 +230,13 @@ jobs:
       - run: npm ci
       - run: node ../../scripts/release-manifest.test.mjs
       - run: npm run build
-      - run: npm --prefix ../../runtime/apps/local-dashboard ci
-      - run: npm --prefix ../../runtime/apps/local-dashboard run build
+      - run: npm --prefix ../../runtime/apps/admin-dashboard ci
+      - run: npm --prefix ../../runtime/apps/admin-dashboard run build
       - name: Verify generated APIs and embedded dashboard are committed
-        run: git -C ../.. diff --exit-code -- js/app/src/platform-api/generated runtime/apps/local-dashboard/src/generated runtime/crates/notaryd/dashboard
+        run: git -C ../.. diff --exit-code -- js/app/src/platform-api/generated runtime/apps/admin-dashboard/src/generated runtime/crates/notaryd/dashboard
       - name: Install browser test runtime
-        run: npx --prefix ../../runtime/apps/local-dashboard playwright install --with-deps chromium
-      - run: npm --prefix ../../runtime/apps/local-dashboard run test
+        run: npx --prefix ../../runtime/apps/admin-dashboard playwright install --with-deps chromium
+      - run: npm --prefix ../../runtime/apps/admin-dashboard run test
       - run: npm run test:site
       - run: npm run test:install
 
@@ -293,7 +293,7 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: 24
-      - run: node runtime/apps/local-dashboard/scripts/check-local-docs.mjs
+      - run: node runtime/apps/admin-dashboard/scripts/check-local-docs.mjs
 
   containers:
     name: Deployment configuration

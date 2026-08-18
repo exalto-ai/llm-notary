@@ -7,8 +7,8 @@
 !runtime/
 !runtime/**
 runtime/target/
-runtime/apps/local-dashboard/node_modules/
-runtime/apps/local-dashboard/.vitest-attachments/
+runtime/apps/admin-dashboard/node_modules/
+runtime/apps/admin-dashboard/.vitest-attachments/
 !platform/
 !platform/**
 !deploy/

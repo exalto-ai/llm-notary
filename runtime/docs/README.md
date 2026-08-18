@@ -3,7 +3,7 @@
 - [Getting started](getting-started.md)
 - [Architecture and trust boundaries](architecture.md)
 - [Local service and REST API](local-service.md)
-- [Local dashboard](local-dashboard.md)
+- [Admin dashboard](admin-dashboard.md)
 - [Provider setup](provider-setup.md)
 - [Agent playbook](agent-playbook.md)
 - [Artifact formats and verification](artifact-formats.md)

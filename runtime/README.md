@@ -20,8 +20,8 @@ cargo test --locked --workspace --all-targets --all-features
 The local dashboard additionally needs Node.js 24 and npm:
 
 ```bash
-npm --prefix apps/local-dashboard ci
-npm --prefix apps/local-dashboard run build
+npm --prefix apps/admin-dashboard ci
+npm --prefix apps/admin-dashboard run build
 ```
 
 Install the two local programs independently:

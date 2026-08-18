@@ -34,14 +34,14 @@ jobs:
         with:
           node-version: 24
           cache: npm
-          cache-dependency-path: apps/local-dashboard/package-lock.json
-      - run: npm --prefix apps/local-dashboard ci
-      - run: npm --prefix apps/local-dashboard run build
-      - run: npm --prefix apps/local-dashboard run check:local-docs
-      - run: git diff --exit-code -- apps/local-dashboard/src/generated crates/notaryd/dashboard
+          cache-dependency-path: apps/admin-dashboard/package-lock.json
+      - run: npm --prefix apps/admin-dashboard ci
+      - run: npm --prefix apps/admin-dashboard run build
+      - run: npm --prefix apps/admin-dashboard run check:local-docs
+      - run: git diff --exit-code -- apps/admin-dashboard/src/generated crates/notaryd/dashboard
       - name: Install browser test runtime
-        run: npx --prefix apps/local-dashboard playwright install --with-deps chromium
-      - run: npm --prefix apps/local-dashboard run test
+        run: npx --prefix apps/admin-dashboard playwright install --with-deps chromium
+      - run: npm --prefix apps/admin-dashboard run test
 
   containers:
     runs-on: ubuntu-latest

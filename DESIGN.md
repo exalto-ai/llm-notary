@@ -137,7 +137,7 @@ rows, rules, and facts               record facts + action
 
 The operational navigation bar is 50px tall; the public site may use 54px when its sign-in action needs the extra height. Controls are 34px tall. Dense result rows are approximately 57px tall and use their columns to reveal title, provider/model, and time without opening a detail view. One vertical rule can divide a list from its inspector. Do not put either side inside a separate card.
 
-Every local list/inspector layout starts with the same **320px list rail**. A 7px drag target on the dividing rule lets the user resize that rail from 272–460px; arrow keys move it in 16px increments, and the chosen width persists across Captures, Finalizations, and Finalized traces. The inspector remains the flexible, dominant pane. Never give one tab a 50/50 split while another starts narrow. If a list cannot fit at the standard width, redesign its row into two or three stacked comparison lines instead of widening the rail or forcing permanent horizontal scrolling. Entire rows open their record by pointer or keyboard. Do not reserve a trailing arrow column for navigation.
+The unified Traces list/inspector layout starts with a **320px list rail**. A 7px drag target on the dividing rule lets the user resize that rail from 272–460px; arrow keys move it in 16px increments, and the chosen width persists for the workspace. The inspector remains the flexible, dominant pane. If a list cannot fit at the standard width, redesign its row into two or three stacked comparison lines instead of widening the rail or forcing permanent horizontal scrolling. Entire rows open their record by pointer or keyboard. Do not reserve a trailing arrow column for navigation.
 
 On mobile, remove the drag divider and let the list and inspector become sequential views. Keep filters visible at the top; replace dense columns with the two facts most useful to the current task. Never make a phone user horizontally scroll an operational table.
 
@@ -149,7 +149,7 @@ Construct grids from one outer 1px `rule` and one 1px internal rule between adja
 
 ### Brand and navigation
 
-Use the rounded-square pen mark on the blue action background with a light pen. Preserve visible breathing room around the pen and increase it further at favicon sizes. The public wordmark is `LLM Notary` in Instrument Sans Variable. The installed local workspace does not repeat the mark or product name in its header; the browser title is simply `LLM Notary`.
+Use the rounded-square pen mark on the blue action background with a light pen. Preserve visible breathing room around the pen and increase it further at favicon sizes. The public wordmark remains `LLM Notary` until its product-wide migration. The administration workspace uses the visible product name `Notary`, a quiet `Local admin` or `Cluster admin` context where needed, and the browser title `Admin · Notary by Exalto`.
 
 Navigation is a single horizontal band. Active items use an indigo bottom rule or left rule, never a pill. A count may appear in mono when it changes a decision. Do not add a second sidebar when the top navigation already exposes the relevant destinations.
 

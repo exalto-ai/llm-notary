@@ -52,7 +52,7 @@ Use the generated contract when prose and an installed service disagree.
 
 The local daemon serves OpenAPI 3.1 at
 `http://127.0.0.1:8788/openapi.json`. Its committed copy is
-`runtime/apps/local-dashboard/src/generated/openapi.json`.
+`runtime/apps/admin-dashboard/src/generated/openapi.json`.
 
 The hosted API contract is committed at
 `js/app/src/platform-api/generated/openapi.json`. Regenerate both through the
