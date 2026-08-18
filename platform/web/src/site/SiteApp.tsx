@@ -971,6 +971,8 @@ export function App({
   const section = requestedSection === 'dashboard' ? 'account' : requestedSection;
   const page =
     requestedSection === 'dashboard' && requestedPage === 'credits' ? 'usage' : requestedPage;
+  const routeQuery = path.includes('?') ? `?${path.split('?').slice(1).join('?')}` : '';
+  const canonicalPath = `${section}${page ? `/${page}` : ''}${routeQuery}`;
   const sectionAnchor = new URLSearchParams(path.split('?')[1] || '').get('section');
   const isLibrary = section === 'library' || section === 'traces' || section === 'collections';
   const accountLoading = section === 'account' && authPending;
@@ -1038,7 +1040,10 @@ export function App({
           onAccountDeleted={accountDeleted}
         />
       ) : section === 'account' ? (
-        <SignInPage route={`signin?return_to=${encodeURIComponent(`#/${path}`)}`} user={null} />
+        <SignInPage
+          route={`signin?return_to=${encodeURIComponent(`#/${canonicalPath}`)}`}
+          user={null}
+        />
       ) : isLegalPage(section) ? (
         <LegalPage pageKey={section} />
       ) : (
