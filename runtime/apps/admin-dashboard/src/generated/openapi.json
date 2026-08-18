@@ -1947,6 +1947,12 @@
               "null"
             ]
           },
+          "safe_code": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "severity": {
             "type": "string"
           },

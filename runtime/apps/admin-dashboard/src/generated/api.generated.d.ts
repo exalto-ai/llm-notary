@@ -475,6 +475,7 @@ export interface components {
             event_type: string;
             message: string;
             operation_id?: string | null;
+            safe_code?: string | null;
             severity: string;
             trace_id?: string | null;
         };

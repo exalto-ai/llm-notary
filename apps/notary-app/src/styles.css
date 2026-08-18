@@ -250,6 +250,7 @@ h1, h2, p { margin: 0; }
 .compact-rows code { color: var(--secondary); font-size: 9px; }
 .service-backed-settings .preference-note { margin-bottom: 10px; border: 1px solid var(--separator-soft); border-radius: 8px; }
 .service-backed-settings .workspace-frame { height: 720px; overflow: hidden; border: 1px solid var(--separator); border-radius: 11px; }
+.embedded-settings-page { width: 100%; height: 100%; padding: 0; }
 
 .workspace-frame { position: relative; width: 100%; height: 100%; background: var(--surface); }
 .workspace-frame iframe { position: relative; z-index: 1; display: block; width: 100%; height: 100%; border: 0; background: var(--surface); }

@@ -18,6 +18,7 @@ export type DesktopState = {
   vault_mode: string;
   vault_locked: boolean;
   version: string | null;
+  app_version: string;
   app_build_id: string;
   daemon_build_id: string | null;
   proxy_listener: string;
@@ -95,6 +96,7 @@ function fallbackState(overrides: Partial<DesktopState> = {}): DesktopState {
     vault_mode: 'keychain',
     vault_locked: false,
     version: null,
+    app_version: '0.1.0',
     app_build_id: 'dev',
     daemon_build_id: null,
     proxy_listener: '127.0.0.1:8787',
@@ -162,6 +164,7 @@ export async function getDesktopState(): Promise<DesktopState> {
       vault_mode: status.vault === 'OS vault' ? 'keychain' : 'passphrase',
       vault_locked: false,
       version: status.version,
+      app_version: '0.1.0',
       app_build_id: 'dev',
       daemon_build_id: status.build_id ?? null,
       proxy_listener: status.proxy_listener,

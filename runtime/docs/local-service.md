@@ -383,6 +383,8 @@ use `1`. Error text is safe and never echoes credentials or plaintext headers.
 - Trace search treats punctuation as token boundaries, so `safety-review`
   and `**safety**` are safe inputs. Space-separated words must all match;
   double quotes preserve a phrase such as `"safety review"`.
+- The `needs_attention` status is the cursor-paginated aggregate of capture
+  failures and failed or interrupted notarization attempts.
 - Activity supports exact `severity`, `event_type`, `trace_id`, and
   `operation_id` filters, a `created_after_unix_ms` lower bound, and `limit`.
   Use `next_cursor` to continue backward through history. Save the separate

@@ -774,6 +774,7 @@ async fn providers(State(state): State<AdminState>) -> Json<ProvidersResponse> {
             "api.openai.com",
             "OpenAI Responses and Chat Completions",
             &state.config.providers.openai,
+            "/v1",
         ),
         (
             "openai_codex",
@@ -781,6 +782,7 @@ async fn providers(State(state): State<AdminState>) -> Json<ProvidersResponse> {
             "chatgpt.com",
             "OpenAI Responses (Codex)",
             &state.config.providers.codex,
+            "",
         ),
         (
             "anthropic",
@@ -788,6 +790,7 @@ async fn providers(State(state): State<AdminState>) -> Json<ProvidersResponse> {
             "api.anthropic.com",
             "Anthropic Messages",
             &state.config.providers.anthropic,
+            "",
         ),
         (
             "deepseek",
@@ -795,6 +798,7 @@ async fn providers(State(state): State<AdminState>) -> Json<ProvidersResponse> {
             "api.deepseek.com",
             "OpenAI-compatible Chat Completions",
             &state.config.providers.deepseek,
+            "",
         ),
         (
             "openrouter",
@@ -802,20 +806,23 @@ async fn providers(State(state): State<AdminState>) -> Json<ProvidersResponse> {
             "openrouter.ai",
             "OpenAI-compatible Chat Completions",
             &state.config.providers.openrouter,
+            "/api/v1",
         ),
     ];
     Json(ProvidersResponse {
         providers: definitions
             .into_iter()
-            .map(|(id, name, host, client_api, config)| Provider {
-                id: id.into(),
-                name: name.into(),
-                host: host.into(),
-                client_api: client_api.into(),
-                route_prefix: config.route_prefix.clone(),
-                proxy_base_url: format!("{proxy_origin}{}", config.route_prefix),
-                ready: config.enabled,
-            })
+            .map(
+                |(id, name, host, client_api, config, client_suffix)| Provider {
+                    id: id.into(),
+                    name: name.into(),
+                    host: host.into(),
+                    client_api: client_api.into(),
+                    route_prefix: config.route_prefix.clone(),
+                    proxy_base_url: format!("{proxy_origin}{}{client_suffix}", config.route_prefix),
+                    ready: config.enabled,
+                },
+            )
             .collect(),
     })
 }
@@ -1368,8 +1375,44 @@ async fn activity(
         .map(|event_id| encode_cursor(&follow_scope, &EventPagePosition { event_id }))
         .transpose()
         .map_err(pagination_api_error)?;
+    let mut operation_failure_codes = HashMap::new();
+    for operation_id in page
+        .items
+        .iter()
+        .filter(|event| {
+            matches!(
+                event.event_type.as_str(),
+                "notarization_failed" | "notarization_interrupted"
+            )
+        })
+        .filter_map(|event| event.operation_id.as_ref())
+    {
+        if operation_failure_codes.contains_key(operation_id) {
+            continue;
+        }
+        let failure_code = state
+            .persistence
+            .metadata
+            .operation(operation_id)
+            .await
+            .map_err(metadata_api_error)?
+            .and_then(|operation| operation.failure_code);
+        operation_failure_codes.insert(operation_id.clone(), failure_code);
+    }
     Ok(Json(ActivityPage {
-        items: page.items.into_iter().map(Into::into).collect(),
+        items: page
+            .items
+            .into_iter()
+            .map(|event| {
+                let safe_code = event
+                    .operation_id
+                    .as_ref()
+                    .and_then(|operation_id| operation_failure_codes.get(operation_id))
+                    .cloned()
+                    .flatten();
+                ActivityItem::new(event, safe_code)
+            })
+            .collect(),
         next_cursor: page.next_cursor,
         high_water_cursor,
     }))
@@ -2837,10 +2880,12 @@ struct ActivityItem {
     operation_id: Option<String>,
     severity: String,
     message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    safe_code: Option<String>,
 }
 
-impl From<Event> for ActivityItem {
-    fn from(value: Event) -> Self {
+impl ActivityItem {
+    fn new(value: Event, safe_code: Option<String>) -> Self {
         Self {
             event_id: value.event_id,
             created_at_unix_ms: value.created_at_unix_ms,
@@ -2849,6 +2894,7 @@ impl From<Event> for ActivityItem {
             operation_id: value.operation_id,
             severity: value.severity,
             message: value.message,
+            safe_code,
         }
     }
 }
@@ -3665,6 +3711,59 @@ mod tests {
             }
         }
         assert_eq!(documented_operations, 26);
+    }
+
+    #[tokio::test]
+    async fn provider_catalog_uses_client_ready_base_urls() {
+        let directory = tempfile::tempdir().unwrap();
+        let response = providers(State(state(directory.path()).await)).await.0;
+        let catalog = response
+            .providers
+            .into_iter()
+            .map(|provider| {
+                (
+                    provider.id,
+                    (provider.route_prefix, provider.proxy_base_url),
+                )
+            })
+            .collect::<std::collections::HashMap<_, _>>();
+
+        assert_eq!(catalog.len(), 5);
+        assert_eq!(
+            catalog.get("openai"),
+            Some(&(
+                "/openai".to_owned(),
+                "http://127.0.0.1:8787/openai/v1".to_owned()
+            ))
+        );
+        assert_eq!(
+            catalog.get("openai_codex"),
+            Some(&(
+                "/codex".to_owned(),
+                "http://127.0.0.1:8787/codex".to_owned()
+            ))
+        );
+        assert_eq!(
+            catalog.get("anthropic"),
+            Some(&(
+                "/anthropic".to_owned(),
+                "http://127.0.0.1:8787/anthropic".to_owned()
+            ))
+        );
+        assert_eq!(
+            catalog.get("deepseek"),
+            Some(&(
+                "/deepseek".to_owned(),
+                "http://127.0.0.1:8787/deepseek".to_owned()
+            ))
+        );
+        assert_eq!(
+            catalog.get("openrouter"),
+            Some(&(
+                "/openrouter".to_owned(),
+                "http://127.0.0.1:8787/openrouter/api/v1".to_owned()
+            ))
+        );
     }
 
     #[tokio::test]

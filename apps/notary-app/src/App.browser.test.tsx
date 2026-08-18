@@ -88,12 +88,39 @@ describe('Notary desktop shell', () => {
     await expect.element(page.getByRole('heading', { name: 'Unlock private traces on this Mac' })).toBeVisible();
   });
 
-  test('combines native update controls with service-backed Settings', async () => {
+  test('uses one embedded desktop-and-service Settings surface', async () => {
     renderApp('?screen=capture-on&view=settings&update=ready');
-    await expect.element(page.getByRole('button', { name: 'Restart to update' })).toBeVisible();
-    await expect.element(page.getByRole('heading', { name: 'Service settings' })).toBeVisible();
     await expect
-      .poll(() => document.querySelector<HTMLIFrameElement>('.service-backed-settings iframe')?.src)
+      .poll(() => document.querySelector<HTMLIFrameElement>('.embedded-settings-page iframe')?.src)
       .toContain('/dashboard?embedded=desktop#/settings');
+    expect(document.querySelectorAll('.embedded-settings-page iframe')).toHaveLength(1);
+    await expect.element(page.getByText('Menu-bar controller', { exact: true })).not.toBeInTheDocument();
+    await expect.element(page.getByRole('heading', { name: 'Service settings' })).not.toBeInTheDocument();
+    const frame = document.querySelector<HTMLIFrameElement>('.embedded-settings-page iframe');
+    if (!frame?.contentWindow) throw new Error('Settings frame is missing');
+    window.dispatchEvent(
+      new MessageEvent('message', {
+        origin: 'http://127.0.0.1:8788',
+        source: frame.contentWindow,
+        data: {
+          type: 'notary:desktop-settings-action',
+          payload: { action: 'set_launch_at_login', enabled: true },
+        },
+      }),
+    );
+    await expect.poll(() => localStorage.getItem('notary-launch-at-login')).toBe('true');
+  });
+
+  test('keeps the five Settings groups available without service lifecycle controls', async () => {
+    renderApp('?screen=offline&view=settings');
+    await expect
+      .poll(() =>
+        Array.from(document.querySelectorAll('.preference-section > h2')).map(
+          (heading) => heading.textContent,
+        ),
+      )
+      .toEqual(['General', 'Account', 'Security', 'Updates', 'Advanced']);
+    await expect.element(page.getByRole('switch', { name: 'Capture new requests' })).toBeDisabled();
+    await expect.element(page.getByRole('button', { name: 'Start Notary' })).not.toBeInTheDocument();
   });
 });

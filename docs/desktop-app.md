@@ -32,11 +32,11 @@ long. Once onboarding is complete, later app launches start the bundled
 service automatically for Keychain and empty-passphrase vaults. A protected
 passphrase vault opens locked and starts capture only after the user unlocks it.
 
-The service-backed Settings screen and the checked **Capture requests** menu-bar item
+The service-backed Settings screen and the checked **Capture new requests** menu-bar item
 read and change the daemon-owned setting. On uses the remote notary and creates
-private captures. Off leaves the service and loopback provider routes running,
+private local Traces. Off leaves the service and loopback provider routes running,
 but sends later requests directly from the daemon to the fixed provider and
-creates no evidence. The home status and route diagram distinguish this state
+creates no Trace. The home status and route diagram distinguish this state
 from both **Ready to capture** and **Service stopped**. The menu item is
 disabled when the daemon is unreachable; the desktop process does not keep a
 second preference. Existing traces can still be browsed, notarized,
@@ -69,6 +69,44 @@ pricing, and settings actions open only validated links returned by the local
 service in the default browser. A browser-approved device session can be
 disconnected from Settings; an injected API key must instead be managed in the
 hosted account settings and is never revoked by the local app.
+Connecting does not upload or share local Traces. It authorizes only the hosted
+features the user later chooses to invoke.
+
+## Activity and Providers
+
+Activity keeps severity, date, and Trace ID directly visible. Operation ID and
+the raw event name are under **More filters**. A Trace-linked event opens that
+Trace; service-only events remain inspectable in Activity. The concise label is
+shown first, while timestamp, bounded failure code, operation ID, and raw event
+name remain available as technical details. Activity never carries prompts,
+responses, credentials, raw headers, vault material, or decrypted capture
+checkpoints.
+
+Providers is the only desktop destination for supported provider routes. Each
+provider shows its client/API style, explicit allowed host, local base URL,
+readiness, capture state, setup note, and Copy action. The external client keeps
+its credential and chooses its provider model. Notary does not expose an
+arbitrary-provider or arbitrary-host control.
+
+## Settings
+
+Desktop Settings has five groups in this order:
+
+1. **General** — Capture new requests and Open Notary at sign-in. Closing the
+   window leaves Notary available from the menu bar.
+2. **Account** — connection state, reconnect/disconnect, plan and usage links,
+   and API-key management where applicable.
+3. **Security** — Local data protection and Notaries. The active notary name,
+   operator, verification key, and state stay visible; lifecycle windows,
+   historical keys, and exact identifiers are under **View details**.
+4. **Updates** — app version, automatic signed-update state, Check now,
+   Restart to update, and the exact reason a restart is blocked.
+5. **Advanced** — Service listeners/profile/build facts and Developer
+   diagnostics/OpenAPI. Provider routes are not duplicated here.
+
+The local dashboard supplies service-backed facts. A bounded parent/frame
+bridge supplies only launch and signed-updater state and accepts only those
+desktop actions; vault keys and other native secrets never cross the frame.
 
 ## Connect subscription-backed clients
 
