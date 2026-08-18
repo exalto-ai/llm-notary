@@ -520,10 +520,10 @@ pub(crate) async fn account_connection_status() -> Result<AccountConnectionStatu
 
 pub(crate) fn account_action_links(origin: &ApiOrigin) -> AccountActionLinks {
     AccountActionLinks {
-        account: origin.web_url("/dashboard").to_string(),
-        usage: origin.web_url("/dashboard/credits").to_string(),
+        account: origin.web_url("/account").to_string(),
+        usage: origin.web_url("/account/usage").to_string(),
         plans: origin.web_url("/pricing").to_string(),
-        settings: origin.web_url("/dashboard/settings").to_string(),
+        settings: origin.web_url("/account/settings").to_string(),
     }
 }
 

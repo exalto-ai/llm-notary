@@ -458,7 +458,7 @@ async fn create_portal_session(
         .await?
         .ok_or_else(|| ApiError::not_found("This account has no active Stripe subscription"))?;
     let mut return_url = state.billing.public_origin.clone();
-    return_url.set_fragment(Some("/dashboard/credits"));
+    return_url.set_fragment(Some("/account/usage"));
     let portal = stripe
         .create_portal_session(&customer_id, &return_url)
         .await
@@ -686,30 +686,30 @@ mod tests {
     use super::*;
 
     #[test]
-    fn checkout_returns_to_the_credit_dashboard_hash_route() {
+    fn checkout_returns_to_the_account_usage_hash_route() {
         let public_origin = Url::parse("https://llm-notary.example/base").unwrap();
         let (success, cancel) = checkout_return_urls(&public_origin, "purchase-id").unwrap();
         assert_eq!(
             success.as_str(),
-            "https://llm-notary.example/#/dashboard/credits?checkout=success&purchase_id=purchase-id"
+            "https://llm-notary.example/#/account/usage?checkout=success&purchase_id=purchase-id"
         );
         assert_eq!(
             cancel.as_str(),
-            "https://llm-notary.example/#/dashboard/credits?checkout=cancelled&purchase_id=purchase-id"
+            "https://llm-notary.example/#/account/usage?checkout=cancelled&purchase_id=purchase-id"
         );
     }
 
     #[test]
-    fn subscription_checkout_returns_to_the_plan_dashboard_hash_route() {
+    fn subscription_checkout_returns_to_the_plan_and_usage_hash_route() {
         let public_origin = Url::parse("https://llm-notary.example/base").unwrap();
         let (success, cancel) = subscription_return_urls(&public_origin).unwrap();
         assert_eq!(
             success.as_str(),
-            "https://llm-notary.example/#/dashboard/credits?subscription=success"
+            "https://llm-notary.example/#/account/usage?subscription=success"
         );
         assert_eq!(
             cancel.as_str(),
-            "https://llm-notary.example/#/dashboard/credits?subscription=cancelled"
+            "https://llm-notary.example/#/account/usage?subscription=cancelled"
         );
     }
 

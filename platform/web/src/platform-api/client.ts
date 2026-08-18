@@ -201,7 +201,10 @@ export async function getHostedTraces(options: PageOptions = {}) {
     params: { query: options },
   });
   if (!response.ok || !data) {
-    throw new PlatformApiError(errorMessage(error, 'Could not load your shares.'), response.status);
+    throw new PlatformApiError(
+      errorMessage(error, 'Could not load your shared traces.'),
+      response.status,
+    );
   }
   return data;
 }
@@ -327,7 +330,7 @@ export async function revokeDevice(sessionId: string) {
   });
   if (!response.ok) {
     throw new PlatformApiError(
-      errorMessage(error, 'Could not revoke this local service session.'),
+      errorMessage(error, 'Could not revoke this connected device.'),
       response.status,
     );
   }
@@ -345,7 +348,7 @@ export async function getDeviceAuthorizationApproval(requestId: string, approval
   );
   if (!response.ok || !data) {
     throw new PlatformApiError(
-      errorMessage(error, 'This authorization request is unavailable.'),
+      errorMessage(error, 'This device connection is unavailable.'),
       response.status,
     );
   }
@@ -364,7 +367,7 @@ export async function approveDeviceAuthorization(requestId: string, approvalSecr
   );
   if (!response.ok) {
     throw new PlatformApiError(
-      errorMessage(error, 'Could not approve this local service request.'),
+      errorMessage(error, 'Could not connect this device.'),
       response.status,
     );
   }

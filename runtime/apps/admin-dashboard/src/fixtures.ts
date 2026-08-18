@@ -730,10 +730,10 @@ export function createFixtureApi({
       },
     },
     links: {
-      account: 'https://notary.exalto.ai/#/dashboard',
-      usage: 'https://notary.exalto.ai/#/dashboard/credits',
+      account: 'https://notary.exalto.ai/#/account',
+      usage: 'https://notary.exalto.ai/#/account/usage',
       plans: 'https://notary.exalto.ai/#/pricing',
-      settings: 'https://notary.exalto.ai/#/dashboard/settings',
+      settings: 'https://notary.exalto.ai/#/account/settings',
     },
   };
   let nextEventId = Math.max(...events.map((event) => event.event_id)) + 1;
