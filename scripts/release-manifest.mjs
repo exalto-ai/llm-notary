@@ -68,7 +68,7 @@ export async function createReleaseManifest({
     throw new Error('publicOrigin must be an HTTPS origin');
   }
   const buildUrl = `${origin.origin}/downloads/releases/builds/${buildId}`;
-  const updaterName = 'LLM-Notary-macos-arm64.app.tar.gz';
+  const updaterName = 'Notary-macos-arm64.app.tar.gz';
   const updaterSignature = requireTauriSignature(
     (await readFile(path.join(releaseDir, `${updaterName}.sig`), 'utf8')).trim(),
     'the Tauri updater signature',
@@ -96,7 +96,7 @@ export async function createReleaseManifest({
       notaryd: await artifact(releaseDir, buildUrl, 'notaryd-windows-x86_64.exe'),
     },
   };
-  const dmg = await artifact(releaseDir, buildUrl, 'LLM-Notary-macos-arm64.dmg');
+  const dmg = await artifact(releaseDir, buildUrl, 'Notary-macos-arm64.dmg');
   const updater = await artifact(releaseDir, buildUrl, updaterName);
 
   return {
