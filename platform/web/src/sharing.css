@@ -64,6 +64,7 @@
 .share-library-controls label > span,
 .share-library-controls > span { color: var(--muted); font: 500 10px 'IBM Plex Mono', monospace; text-transform: uppercase; letter-spacing: .08em; }
 .share-library-controls > span { padding: 0 0 11px 14px; text-align: right; }
+.share-library-filter-note { margin: -10px 0 20px; color: var(--muted); font-size: 12px; }
 .share-library-controls input,
 .share-library-controls button { border-color: var(--line); border-radius: 0; background: transparent; }
 

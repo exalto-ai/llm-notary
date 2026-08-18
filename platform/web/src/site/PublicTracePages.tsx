@@ -951,6 +951,11 @@ export function PublicTraces({
           {nextCursor ? '+' : ''} {(shares?.length || 0) === 1 ? 'trace' : 'traces'} shown
         </span>
       </section>
+      {dateRange !== 'all' && (
+        <p className="share-library-filter-note">
+          Date filters omit password-protected entries because their sharing time is withheld.
+        </p>
+      )}
       {queryIsNotIndexable ? (
         <section className="collection-empty">
           <b>Keep typing.</b>
@@ -1369,7 +1374,7 @@ export function PublicTracePage({
       <main className="share-page share-page-state" role="alert">
         <h1>Shared trace unavailable</h1>
         <p>{loadError} It may be expired, stopped, missing, or temporarily unavailable.</p>
-        <a href="#/traces">Open public Traces</a>
+        <a href="/#/traces">Open public Traces</a>
       </main>
     );
   if (passwordRequired)
@@ -1397,7 +1402,7 @@ export function PublicTracePage({
             </p>
           )}
           <div>
-            <a href="#/traces">Back to public Traces</a>
+            <a href="/#/traces">Back to public Traces</a>
             <button type="submit" disabled={!password || checkingPassword}>
               {checkingPassword ? 'Opening…' : 'Open trace'}
             </button>
@@ -1617,7 +1622,7 @@ export function PublicTracePage({
             <button type="button" onClick={copyShareLink}>
               {copied ? 'Copied' : 'Copy link'}
             </button>
-            <a href="#/docs/trace-packages">Verify independently</a>
+            <a href="/#/docs/trace-packages">Verify independently</a>
             <button type="button" onClick={() => setReportOpen(true)}>
               Report this trace
             </button>

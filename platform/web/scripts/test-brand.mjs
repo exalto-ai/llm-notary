@@ -9,6 +9,7 @@ const mark = readFileSync(resolve(root, 'public/notary-mark.svg'), 'utf8');
 const favicon = readFileSync(resolve(root, 'public/favicon.svg'), 'utf8');
 const preview = readFileSync(resolve(root, 'public/social-preview.png'));
 const siteCaddy = readFileSync(resolve(root, 'Caddyfile'), 'utf8');
+const flyCaddy = readFileSync(resolve(root, 'Caddyfile.fly'), 'utf8');
 const gatewayCaddy = readFileSync(resolve(root, '../../deploy/gateway.Caddyfile'), 'utf8');
 const relayAnimation = readFileSync(resolve(root, 'src/RelayAnimation.tsx'), 'utf8');
 
@@ -42,6 +43,7 @@ if (preview.readUInt32BE(16) !== 1200 || preview.readUInt32BE(20) !== 630) {
 }
 for (const [label, caddy] of [
   ['site Caddyfile', siteCaddy],
+  ['Fly Caddyfile', flyCaddy],
   ['gateway Caddyfile', gatewayCaddy],
 ]) {
   requireText(caddy, '@shared path /s/*', label);

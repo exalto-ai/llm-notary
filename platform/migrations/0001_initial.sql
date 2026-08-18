@@ -237,18 +237,17 @@ CREATE INDEX traces_owner_page_idx
     ON notary_api.traces (account_id, created_at DESC, trace_id DESC);
 CREATE INDEX traces_listed_page_idx
     ON notary_api.traces (
-        (CASE WHEN access_password_hash IS NULL THEN verified_at ELSE 0 END) DESC,
+        authenticated_provider_connection_unix_ms DESC NULLS LAST,
         trace_id DESC
     )
     WHERE status = 'shared' AND visibility = 'listed';
 CREATE INDEX traces_listed_provider_page_idx
     ON notary_api.traces (
         provider,
-        verified_at DESC,
+        authenticated_provider_connection_unix_ms DESC NULLS LAST,
         trace_id DESC
     )
-    WHERE status = 'shared' AND visibility = 'listed'
-      AND access_password_hash IS NULL;
+    WHERE status = 'shared' AND visibility = 'listed';
 CREATE INDEX traces_listing_search_idx
     ON notary_api.traces USING GIN (listing_search_text public.gin_trgm_ops)
     WHERE status = 'shared' AND visibility = 'listed';

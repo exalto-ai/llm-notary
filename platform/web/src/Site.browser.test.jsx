@@ -1280,6 +1280,9 @@ describe('hosted site', () => {
     await page.getByRole('combobox', { name: 'Date shared' }).click();
     await page.getByRole('option', { name: 'Past 7 days' }).click();
     await expect.element(page.getByText(/^[78] traces shown$/)).toBeVisible();
+    await expect
+      .element(page.getByText(/Date filters omit password-protected entries/))
+      .toBeVisible();
     expect(requests.at(-1).shared_after).toBeGreaterThan(Math.floor(Date.now() / 1000) - 8 * 86400);
   });
 
@@ -1609,7 +1612,7 @@ describe('hosted site', () => {
     );
     expect(
       page.getByRole('link', { name: 'Verify independently' }).element().getAttribute('href'),
-    ).toBe('#/docs/trace-packages');
+    ).toBe('/#/docs/trace-packages');
 
     cleanup();
     render(
@@ -1739,6 +1742,9 @@ describe('hosted site', () => {
     await expect
       .element(page.getByText(/expired, stopped, missing, or temporarily unavailable/))
       .toBeVisible();
+    await expect
+      .element(page.getByRole('link', { name: 'Open public Traces' }))
+      .toHaveAttribute('href', '/#/traces');
     expect(document.body.textContent).not.toContain('Storage backend failed');
     expect(document.body.textContent).not.toContain('Trace content failed');
     expect(document.querySelector('meta[name="robots"]')?.getAttribute('content')).toContain(
