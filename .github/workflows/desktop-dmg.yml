@@ -50,7 +50,7 @@ jobs:
       LLM_NOTARY_UPDATES_ENABLED: ${{ inputs.updates_enabled && '1' || '0' }}
     defaults:
       run:
-        working-directory: js/desktop
+        working-directory: apps/notary-app
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@master
@@ -62,7 +62,7 @@ jobs:
         with:
           node-version: 24
           cache: npm
-          cache-dependency-path: js/desktop/package-lock.json
+          cache-dependency-path: apps/notary-app/package-lock.json
       - run: npm ci
 
       - name: Prepare bundled daemon
@@ -149,13 +149,13 @@ jobs:
           xcrun stapler validate "$dmg"
           spctl --assess --type execute --verbose=4 "$app"
           spctl --assess --type open --context context:primary-signature --verbose=4 "$dmg"
-          test -x "$app/Contents/MacOS/llm-notary-desktop"
+          test -x "$app/Contents/MacOS/notary-app"
           test -x "$app/Contents/MacOS/notaryd"
-          strings "$app/Contents/MacOS/llm-notary-desktop" | grep -F "$LLM_NOTARY_BUILD_ID" >/dev/null
+          strings "$app/Contents/MacOS/notary-app" | grep -F "$LLM_NOTARY_BUILD_ID" >/dev/null
           "$app/Contents/MacOS/notaryd" --version | grep -F "$LLM_NOTARY_BUILD_ID" >/dev/null
       - uses: actions/upload-artifact@v7
         with:
           name: desktop-macos-arm64
-          path: js/desktop/release/*
+          path: apps/notary-app/release/*
           if-no-files-found: error
           retention-days: 3

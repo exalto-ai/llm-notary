@@ -4205,25 +4205,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "92daf443525c4cce67b150400bc2316076100ce0b3686209eb8cf3c31612e6f0"
 
 [[package]]
-name = "llm-notary-desktop"
-version = "0.1.0"
-dependencies = [
- "llm-notary-updater",
- "notary-core",
- "reqwest 0.12.28",
- "serde",
- "serde_json",
- "tauri",
- "tauri-build",
- "tauri-plugin-autostart",
- "tauri-plugin-shell",
- "tauri-plugin-updater",
- "tokio",
- "url",
- "zeroize",
-]
-
-[[package]]
 name = "llm-notary-updater"
 version = "0.1.0"
 dependencies = [
@@ -4947,6 +4928,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "notary-app"
+version = "0.1.0"
+dependencies = [
+ "llm-notary-updater",
+ "notary-core",
+ "notaryctl",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-autostart",
+ "tauri-plugin-shell",
+ "tauri-plugin-updater",
+ "tokio",
+ "url",
+ "zeroize",
+]
+
+[[package]]
 name = "notary-core"
 version = "0.1.0"
 dependencies = [
@@ -5027,6 +5027,24 @@ dependencies = [
  "tokio",
  "tracing",
  "url",
+]
+
+[[package]]
+name = "notaryctl"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "llm-notary-updater",
+ "reqwest 0.12.28",
+ "rpassword",
+ "serde",
+ "serde_json",
+ "tokio",
+ "toml 0.8.2",
+ "url",
+ "uuid",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

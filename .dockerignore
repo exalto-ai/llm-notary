@@ -14,8 +14,8 @@ runtime/apps/admin-dashboard/.vitest-attachments/
 !deploy/
 !deploy/notary-server-entrypoint.sh
 !js/
-!js/desktop/
-!js/desktop/src-tauri/
-!js/desktop/src-tauri/Cargo.toml
-!js/desktop/src-tauri/src/
-!js/desktop/src-tauri/src/lib.rs
+!apps/notary-app/
+!apps/notary-app/src-tauri/
+!apps/notary-app/src-tauri/Cargo.toml
+!apps/notary-app/src-tauri/src/
+!apps/notary-app/src-tauri/src/lib.rs

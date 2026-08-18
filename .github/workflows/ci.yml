@@ -59,7 +59,7 @@ jobs:
               - 'runtime/apps/admin-dashboard/**'
               - 'runtime/crates/notaryd/**'
               - 'js/app/**'
-              - 'js/desktop/src-tauri/tauri.release.conf.json'
+              - 'apps/notary-app/src-tauri/tauri.release.conf.json'
               - 'scripts/release-manifest.mjs'
               - 'scripts/release-manifest.test.mjs'
             desktop:
@@ -73,7 +73,7 @@ jobs:
               - 'runtime/crates/notary-core/**'
               - 'runtime/crates/llm-notary-updater/**'
               - 'runtime/config/updater-public-key.txt'
-              - 'js/desktop/**'
+              - 'apps/notary-app/**'
             docs:
               - '.github/workflows/ci.yml'
               - 'runtime/README.md'
@@ -111,7 +111,7 @@ jobs:
               - 'runtime/skills/**'
               - 'js/app/public/install.sh'
               - 'js/app/scripts/test-install.sh'
-              - 'js/desktop/**'
+              - 'apps/notary-app/**'
               - 'runtime/config/updater-public-key.txt'
               - 'scripts/release-manifest.mjs'
               - 'scripts/release-manifest.test.mjs'
@@ -250,7 +250,7 @@ jobs:
     runs-on: macos-14
     defaults:
       run:
-        working-directory: js/desktop
+        working-directory: apps/notary-app
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@master
@@ -262,11 +262,11 @@ jobs:
         with:
           node-version: 24
           cache: npm
-          cache-dependency-path: js/desktop/package-lock.json
+          cache-dependency-path: apps/notary-app/package-lock.json
       - run: npm ci
       - name: Prepare bundled daemon
         run: npm run prepare:sidecar:debug
-      - run: cargo clippy -p llm-notary-desktop --all-targets -- -D warnings
+      - run: cargo clippy -p notary-app --all-targets -- -D warnings
       - name: Build debug application bundle with bundled daemon
         run: npm exec -- tauri build --debug --bundles app
       - name: Verify signed updater artifact packaging

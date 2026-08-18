@@ -111,7 +111,7 @@ test('release packaging uses the committed updater trust root', async () => {
   const repository = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
   const publicKey = (await readFile(path.join(repository, 'runtime/config/updater-public-key.txt'), 'utf8')).trim();
   const releaseConfig = JSON.parse(await readFile(
-    path.join(repository, 'js/desktop/src-tauri/tauri.release.conf.json'),
+    path.join(repository, 'apps/notary-app/src-tauri/tauri.release.conf.json'),
     'utf8',
   ));
   assert.equal(releaseConfig.plugins.updater.pubkey, publicKey);

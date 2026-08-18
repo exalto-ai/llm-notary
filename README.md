@@ -8,7 +8,7 @@ LLM Notary creates selectively disclosed, independently verifiable evidence for 
 - `platform/crates/notary-api` owns accounts, credits, billing, uploads, sharing, and the hosted HTTP API.
 - `platform/crates/notary-server-platform-adapter` injects private platform admission and usage settlement policy into the generic runtime notary.
 - `platform/migrations` contains forward-only hosted database migrations.
-- `js/app` is the public website and hosted dashboard; `js/desktop` is the private native wrapper around `notaryd`.
+- `js/app` is the public website and hosted dashboard; `apps/notary-app` is the private native wrapper around `notaryd`.
 - `deploy`, `compose.yml`, and the root `Dockerfile` define Exalto's hosted deployment.
 
 The public runtime must never import the platform, website, desktop wrapper, billing, account, or hosted-admission trees. Enforce that boundary with:

@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "LLM Notary",
+  "productName": "Notary",
   "version": "0.1.0",
-  "identifier": "ai.exalto.llm-notary",
+  "identifier": "ai.exalto.notary",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://127.0.0.1:1420",
@@ -13,7 +13,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "LLM Notary",
+        "title": "Notary",
         "width": 1280,
         "height": 820,
         "minWidth": 980,

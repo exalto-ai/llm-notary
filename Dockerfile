@@ -4,8 +4,8 @@ WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
 COPY runtime ./runtime
 COPY platform ./platform
-COPY js/desktop/src-tauri/Cargo.toml ./js/desktop/src-tauri/Cargo.toml
-COPY js/desktop/src-tauri/src/lib.rs ./js/desktop/src-tauri/src/lib.rs
+COPY apps/notary-app/src-tauri/Cargo.toml ./apps/notary-app/src-tauri/Cargo.toml
+COPY apps/notary-app/src-tauri/src/lib.rs ./apps/notary-app/src-tauri/src/lib.rs
 RUN cargo build --locked --release \
     -p notary-server-platform-adapter --bin notary-server \
     -p notary-api --bin notary-api
