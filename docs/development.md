@@ -17,7 +17,7 @@ documentation update rules that protect LLM Notary's trust boundaries.
 | `platform/crates/notary-server-platform-adapter/` | private platform ticket redemption, durable usage outbox, and settlement policy |
 | `platform/crates/notary-api/` | hosted API, identity, admission tickets, sharing, verification, Library, and billing |
 | `platform/migrations/` | forward-only hosted schema migrations |
-| `js/app/` | private platform website |
+| `platform/web/` | private platform website |
 | `compose.yml`, `deploy/`, `.github/workflows/` | containers, production deployment, and CI |
 
 Treat `runtime/vendor/` as third-party code. Change it only when the protocol requires
@@ -35,7 +35,7 @@ Install JavaScript dependencies only when working on the site, dashboard,
 generated API clients, or their documentation:
 
 ```bash
-npm --prefix js/app ci
+npm --prefix platform/web ci
 npm --prefix runtime/apps/admin-dashboard ci
 ```
 
@@ -46,14 +46,14 @@ from committed contract copies.
 
 ```bash
 npm --prefix runtime/apps/admin-dashboard run generate:api
-npm --prefix js/app run generate:platform-api
+npm --prefix platform/web run generate:platform-api
 ```
 
 Use the check forms in CI or before review:
 
 ```bash
 npm --prefix runtime/apps/admin-dashboard run check:api
-npm --prefix js/app run check:platform-api
+npm --prefix platform/web run check:platform-api
 ```
 
 Do not hand-edit files under either `generated/` directory. When a route,
@@ -83,9 +83,9 @@ cargo test \
 cargo test --manifest-path runtime/Cargo.toml \
   --workspace --all-targets --all-features
 npm --prefix runtime/apps/admin-dashboard run build
-npm --prefix js/app run build
+npm --prefix platform/web run build
 npm --prefix runtime/apps/admin-dashboard run test
-npm --prefix js/app run test:site
+npm --prefix platform/web run test:site
 npm --prefix runtime/apps/admin-dashboard run check:local-docs
 ```
 
@@ -233,8 +233,8 @@ fixed, clearly synthetic test credential; never substitute a real key.
 
 ## Frontend source and embedded output
 
-The hosted SPA is split by domain under `js/app/src/site/`, with
-`js/app/src/main.tsx` as the application shell and router. The public runtime
+The hosted SPA is split by domain under `platform/web/src/site/`, with
+`platform/web/src/main.tsx` as the application entry point. The public runtime
 dashboard lives independently under `runtime/apps/admin-dashboard/`.
 
 `runtime/crates/notaryd/dashboard/` is intentionally committed build
@@ -253,8 +253,8 @@ Keep each surface focused:
   including the component/route map and documentation coverage checklist.
 - `runtime/README.md` and `runtime/docs/` are the independently publishable
   runtime entry point and full public-runtime references.
-- `js/app/src/site/PublicDocs.tsx` contains the shorter public-site documentation journey.
-- `js/app/public/llms.txt` is the machine-readable public documentation index.
+- `platform/web/src/site/PublicDocs.tsx` contains the shorter public-site documentation journey.
+- `platform/web/public/llms.txt` is the machine-readable public documentation index.
 - generated OpenAPI is the exact route and schema authority.
 - `AGENTS.md` contains repository constraints for coding agents.
 - `DESIGN.md` contains the UI language and content rules.
@@ -276,7 +276,7 @@ Run both documentation contract checks after prose changes:
 
 ```bash
 npm --prefix runtime/apps/admin-dashboard run check:local-docs
-npm --prefix js/app run check:docs
+npm --prefix platform/web run check:docs
 ```
 
 They check local and hosted API coverage, contract terms, source-repository and

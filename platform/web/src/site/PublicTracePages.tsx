@@ -203,7 +203,7 @@ const verificationErrors = {
   ],
   unsupported_media_type: [
     'File type is unsupported',
-    'Choose a finalized file whose name ends in `.llmtrace`.',
+    'Choose a notarized file whose name ends in `.llmtrace`.',
   ],
 } as const;
 
@@ -1213,7 +1213,7 @@ export function PublicTracePage({
   }, [loadShare, loadTrace, traceId]);
   useEffect(() => {
     if (!share && !passwordRequired) return undefined;
-    if (share) document.title = `${share.model} · LLM Notary`;
+    if (share) document.title = `${share.title || share.model} · Notary by Exalto`;
     const existingRobots = document.head.querySelector('meta[name="robots"][data-share-page]');
     const robots =
       existingRobots instanceof HTMLMetaElement ? existingRobots : document.createElement('meta');
@@ -1228,7 +1228,7 @@ export function PublicTracePage({
         : 'index, follow';
     return () => {
       robots?.remove();
-      document.title = 'LLM Notary';
+      document.title = 'Notary by Exalto';
     };
   }, [passwordRequired, share]);
   const unlock = async (event: FormEvent<HTMLFormElement>) => {

@@ -58,7 +58,7 @@ jobs:
               - 'platform/crates/notary-api/**'
               - 'runtime/apps/admin-dashboard/**'
               - 'runtime/crates/notaryd/**'
-              - 'js/app/**'
+              - 'platform/web/**'
               - 'apps/notary-app/src-tauri/tauri.release.conf.json'
               - 'scripts/release-manifest.mjs'
               - 'scripts/release-manifest.test.mjs'
@@ -94,7 +94,7 @@ jobs:
               - 'runtime/**'
               - 'compose.yml'
               - 'deploy/**'
-              - 'js/app/**'
+              - 'platform/web/**'
             cli:
               - '.github/workflows/ci.yml'
               - '.github/workflows/release.yml'
@@ -109,8 +109,8 @@ jobs:
               - 'runtime/crates/notaryctl/**'
               - 'runtime/crates/llm-notary-updater/**'
               - 'runtime/skills/**'
-              - 'js/app/public/install.sh'
-              - 'js/app/scripts/test-install.sh'
+              - 'platform/web/public/install.sh'
+              - 'platform/web/scripts/test-install.sh'
               - 'apps/notary-app/**'
               - 'runtime/config/updater-public-key.txt'
               - 'scripts/release-manifest.mjs'
@@ -215,7 +215,7 @@ jobs:
     runs-on: ubuntu-24.04
     defaults:
       run:
-        working-directory: js/app
+        working-directory: platform/web
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@master
@@ -226,14 +226,14 @@ jobs:
         with:
           node-version: 24
           cache: npm
-          cache-dependency-path: js/app/package-lock.json
+          cache-dependency-path: platform/web/package-lock.json
       - run: npm ci
       - run: node ../../scripts/release-manifest.test.mjs
       - run: npm run build
       - run: npm --prefix ../../runtime/apps/admin-dashboard ci
       - run: npm --prefix ../../runtime/apps/admin-dashboard run build
       - name: Verify generated APIs and embedded dashboard are committed
-        run: git -C ../.. diff --exit-code -- js/app/src/platform-api/generated runtime/apps/admin-dashboard/src/generated runtime/crates/notaryd/dashboard
+        run: git -C ../.. diff --exit-code -- platform/web/src/platform-api/generated runtime/apps/admin-dashboard/src/generated runtime/crates/notaryd/dashboard
       - name: Install browser test runtime
         run: npx --prefix ../../runtime/apps/admin-dashboard playwright install --with-deps chromium
       - run: npm --prefix ../../runtime/apps/admin-dashboard run test

@@ -1,7 +1,7 @@
 ---
 version: beta
-name: LLM Notary / Axis
-description: A compact evidence workspace for people who need to find, inspect, finalize, and verify LLM interactions without ceremony.
+name: Notary by Exalto / Axis
+description: A compact evidence workspace for people who need to find, inspect, notarize, and verify LLM interactions without ceremony.
 colors:
   canvas: "#FFFFFF"
   surface: "#FFFFFF"
@@ -65,15 +65,15 @@ layout:
   splitRailRange: 272–460px
 ---
 
-# LLM Notary design language
+# Notary design language
 
 ## Product posture
 
-LLM Notary is evidence infrastructure. Its audience already understands model providers, local tooling, and the difference between a claim and a record. The interface’s job is to make the next accountable action obvious: capture, inspect, finalize, verify, or share.
+Notary is evidence infrastructure. Its audience already understands model providers, local tooling, and the difference between a claim and a record. The interface’s job is to make the next accountable action obvious: capture, inspect, notarize, verify, or share.
 
 Axis should feel like a precise instrument panel built around an evidence record. It is cool, compact, legible, and calm. It must never read like a generic AI product, a marketing dashboard, or a document with decorative metadata.
 
-The visual signature is the indigo rounded-square pen mark. It appears as the favicon and the smallest brand identifier. The normal mark keeps roughly 11% inset around the pen; the favicon uses roughly 21% so the pen remains legible instead of touching the browser chrome. Everything else stays quiet enough for the evidence itself to lead.
+The visual signature is the indigo rounded-square pen mark. It appears as the favicon and the smallest brand identifier. The ordinary product name is `Notary`; the formal standalone identity is `Notary by Exalto`, with `Notary` visually dominant and `by Exalto` subordinate. The normal mark keeps roughly 11% inset around the pen; the favicon uses roughly 21% so the pen remains legible instead of touching the browser chrome. Everything else stays quiet enough for the evidence itself to lead.
 
 ## The governing rule: start with the work
 
@@ -149,7 +149,7 @@ Construct grids from one outer 1px `rule` and one 1px internal rule between adja
 
 ### Brand and navigation
 
-Use the rounded-square pen mark on the blue action background with a light pen. Preserve visible breathing room around the pen and increase it further at favicon sizes. The public wordmark remains `LLM Notary` until its product-wide migration. The administration workspace uses the visible product name `Notary`, a quiet `Local admin` or `Cluster admin` context where needed, and the browser title `Admin · Notary by Exalto`.
+Use the rounded-square pen mark on the blue action background with a light pen. Preserve visible breathing room around the pen and increase it further at favicon sizes. The public wordmark is `Notary`. Use the endorsed `Notary by Exalto` lockup only where standalone ownership matters, keeping `Notary` dominant and `by Exalto` subordinate. The administration workspace uses the visible product name `Notary`, a quiet `Local admin` or `Cluster admin` context where needed, and the browser title `Admin · Notary by Exalto`.
 
 Navigation is a single horizontal band. Active items use an indigo bottom rule or left rule, never a pill. A count may appear in mono when it changes a decision. Do not add a second sidebar when the top navigation already exposes the relevant destinations.
 
@@ -183,7 +183,7 @@ Facts must describe a real state or trust boundary. Do not restate a section tit
 
 ### States, errors, empty views, and modal dialogs
 
-Statuses use a small square outlined marker plus words. `Ready to finalize` and `Verified` use blue; `Needs attention`, `Rejected`, and `Failed` use attention; neutral states use muted rules. Never use a status color without text.
+Statuses use a small square outlined marker plus words. `Ready to notarize` and `Notarized` use blue; `Needs attention`, `Rejected`, and `Failed` use attention; neutral states use muted rules. Never use a status color without text.
 
 Empty states state what is absent and offer the appropriate next action. Errors say what failed and expose a retry or recovery action. They do not apologize, use ellipses for mood, or imply background activity that is not happening.
 

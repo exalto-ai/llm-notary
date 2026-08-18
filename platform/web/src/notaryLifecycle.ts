@@ -24,9 +24,9 @@ export function notaryLifecycle(status: string) {
       };
     case 'retiring':
       return {
-        label: 'Finalization-only',
+        label: 'Notarization-only',
         description:
-          'May finalize compatible existing bundles until its configured cutoff. It does not accept new captures.',
+          'May notarize compatible existing bundles until its configured cutoff. It does not accept new captures.',
       };
     case 'retired':
       return {
@@ -38,7 +38,7 @@ export function notaryLifecycle(status: string) {
       return {
         label: 'Untrusted',
         description:
-          'Revoked and not trusted for capture, finalization, or historical verification.',
+          'Revoked and not trusted for capture, notarization, or historical verification.',
       };
     case 'configured':
       return {

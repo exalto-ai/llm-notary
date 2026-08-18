@@ -89,7 +89,7 @@ export default function CreditUtilizationChart({
           role="status"
         >
           <strong>No utilization in the last 30 days</strong>
-          <span>Hosted finalization use will appear here in MB.</span>
+          <span>Hosted notarization use will appear here in MB.</span>
         </div>
       ) : (
         <div className="dashboard-utilization-plot" role="img" aria-label={summary}>

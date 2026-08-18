@@ -58,7 +58,7 @@ function AuthorizationPage({
             <div
               className="cli-approval-path"
               role="img"
-              aria-label="Local service connects to an LLM Notary account"
+              aria-label="Local service connects to an Notary account"
             >
               <span>
                 <i aria-hidden="true" />
@@ -67,7 +67,7 @@ function AuthorizationPage({
               <b aria-hidden="true" />
               <span>
                 <i aria-hidden="true" />
-                LLM Notary account
+                Notary account
               </span>
             </div>
           </header>
@@ -215,7 +215,7 @@ export function DeviceAuthorizationApproval({
       title="Approve this local service?"
       description={
         <p>
-          This allows the local dashboard to use hosted finalization and create shares under your
+          This allows the local dashboard to use hosted notarization and create shares under your
           account.
         </p>
       }

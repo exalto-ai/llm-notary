@@ -2,6 +2,9 @@ import { cleanup, fireEvent, render } from '@testing-library/react';
 import { afterEach, describe, expect, test } from 'vitest';
 import { page } from 'vitest/browser';
 import CreditUtilizationChart from './CreditUtilizationChart';
+import { ProviderIdentity } from './ProviderIdentity';
+import { PlatformApiError } from './platform-api/client';
+import { latestMacosDownloadHref } from './releaseDownloads';
 import {
   AccountSettings,
   ApiKeysPanel,
@@ -18,10 +21,7 @@ import {
   PublicTracePage,
   SignInPage,
   VerificationPage,
-} from './main';
-import { ProviderIdentity } from './ProviderIdentity';
-import { PlatformApiError } from './platform-api/client';
-import { latestMacosDownloadHref } from './releaseDownloads';
+} from './site/SiteApp';
 import { initialThemePreference } from './theme';
 
 afterEach(async () => {
@@ -153,10 +153,10 @@ describe('hosted site', () => {
     await expect.element(download).toHaveAttribute('download', 'LLM-Notary-macos-arm64.dmg');
     await expect.element(page.getByText('Apple silicon · macOS 12+')).not.toBeInTheDocument();
     await expect
-      .element(page.getByRole('link', { name: 'build on the LLM Notary stack' }))
+      .element(page.getByRole('link', { name: 'build on the Notary stack' }))
       .toHaveAttribute('href', '#/docs/getting-started');
     expect(document.querySelector('.hero-developer-path')?.textContent).toBe(
-      'or, build on the LLM Notary stack',
+      'or, build on the Notary stack',
     );
     await expect.element(page.getByRole('link', { name: 'Get started' })).not.toBeInTheDocument();
     await expect
@@ -174,6 +174,10 @@ describe('hosted site', () => {
     );
 
     const productNav = document.querySelector('.product-nav');
+    await expect
+      .element(page.getByRole('link', { name: 'Notary home' }))
+      .toHaveAttribute('href', '/#/');
+    await expect.element(page.getByText('Notary by Exalto')).toBeVisible();
     expect(Array.from(productNav.querySelectorAll('a'), (link) => link.textContent)).toEqual([
       'Docs',
       'Pricing',
@@ -189,6 +193,14 @@ describe('hosted site', () => {
     await expect
       .element(footer.getByRole('link', { name: 'Library' }))
       .toHaveAttribute('href', '/#/library');
+  });
+
+  test('uses the endorsed identity in browser titles', async () => {
+    window.location.hash = '#/privacy';
+    render(<App loadCurrentUser={async () => null} />);
+
+    await expect.element(page.getByRole('heading', { name: 'Privacy Policy' })).toBeVisible();
+    expect(document.title).toBe('Privacy · Notary by Exalto');
   });
 
   test('explains hosted pricing in plain language on the landing page', async () => {

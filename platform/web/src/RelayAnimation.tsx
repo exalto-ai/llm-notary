@@ -269,7 +269,7 @@ export function RelayAnimation() {
     <section
       ref={sectionRef}
       className="relay-animation"
-      aria-label="A provider completion travels as encrypted traffic through LLM Notary to a local TLS proxy. The proxy produces plaintext output for your agent and a portable evidence package."
+      aria-label="A provider completion travels as encrypted traffic through Notary to a local TLS proxy. The proxy produces plaintext output for your agent and a portable evidence package."
     >
       <div ref={viewportRef} className="relay-animation__viewport" aria-hidden="true">
         <div ref={flowRef} className="relay-animation__flow">

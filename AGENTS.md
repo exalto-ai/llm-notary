@@ -5,7 +5,7 @@
 - `runtime/` is the self-contained public workspace. It owns core protocol/evidence contracts, the local daemon, thin REST CLI, generic remote notary, updater, local dashboard, runtime docs, and pinned TLSNotary sources.
 - `platform/crates/notary-api/` owns the hosted account, credit, billing, upload, and sharing API. `platform/crates/notary-server-platform-adapter/` is the private admission and settlement adapter around the generic notary.
 - `runtime/vendor/tlsn/` is a pinned, locally patched TLSNotary dependency. Treat it as third-party code; change it only when the protocol requires it and explain the patch.
-- `js/app/` is the hosted Vite/React website. `runtime/apps/admin-dashboard/` is the daemon dashboard. Follow [`DESIGN.md`](DESIGN.md) for UI work.
+- `platform/web/` is the hosted Vite/React website. `runtime/apps/admin-dashboard/` is the daemon dashboard. Follow [`DESIGN.md`](DESIGN.md) for UI work.
 - `docs/README.md` indexes user, operator, and contributor documentation. `compose.yml`, `deploy/`, and `.github/workflows/` define the container configuration and Fly.io deployment.
 
 ## Non-negotiable trust boundaries
@@ -27,7 +27,7 @@ cargo fmt --manifest-path runtime/Cargo.toml --check \
 cargo test -p notary-api -p notary-server-platform-adapter --all-targets --all-features
 cargo test --manifest-path runtime/Cargo.toml --workspace --all-targets --all-features
 npm --prefix runtime/apps/admin-dashboard run build
-npm --prefix js/app run build
+npm --prefix platform/web run build
 npm --prefix runtime/apps/admin-dashboard run check:local-docs
 ```
 
@@ -66,5 +66,5 @@ gh stack view --json
 - The Cloudflare tunnel targets the stable `web` gateway. Do not rename or routinely recreate that service; replaceable SPA/API containers belong behind it.
 - Treat deployment-compatibility dual writes as temporary migration scaffolding. Before merging any change that introduces one, file a follow-up issue to remove it and link that issue from the migration, ADR, or pull request. The issue must name both data paths, the condition that makes removal safe, and the cleanup and validation required; do not leave an untracked second source of truth.
 - Treat generated OpenAPI as the exact HTTP contract. Regenerate clients and update every affected guide when a route, status, field, or authentication rule changes.
-- Keep `README.md` short; put task and reference depth under `docs/`, and keep public-site copy and `js/app/public/llms.txt` aligned with the same trust boundaries.
+- Keep `README.md` short; put task and reference depth under `docs/`, and keep public-site copy and `platform/web/public/llms.txt` aligned with the same trust boundaries.
 - Prefer small, task-focused diffs. Update README or docs when CLI behavior, capture artifacts, trust assumptions, or deployment steps change.

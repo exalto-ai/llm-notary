@@ -73,7 +73,7 @@ jobs:
           FLY_API_TOKEN: ${{ secrets.FLY_WEB_DEPLOY_TOKEN }}
         run: |
           set -euo pipefail
-          flyctl deploy js/app --remote-only --build-only --push \
+          flyctl deploy platform/web --remote-only --build-only --push \
             --image-label "$IMAGE_LABEL" \
             --config "$GITHUB_WORKSPACE/deploy/fly/web.fly.toml"
           flyctl auth docker
@@ -202,7 +202,7 @@ jobs:
           WEB_IMAGE: ${{ steps.web-image.outputs.ref }}
         run: |
           touch "$RUNNER_TEMP/web-rollout-attempted"
-          flyctl deploy js/app --image "$WEB_IMAGE" --ha=false --strategy rolling \
+          flyctl deploy platform/web --image "$WEB_IMAGE" --ha=false --strategy rolling \
             --config "$GITHUB_WORKSPACE/deploy/fly/web.fly.toml"
       - name: Verify new web to API readiness
         run: >-
@@ -234,7 +234,7 @@ jobs:
           api_rollback_succeeded=1
 
           if test -e "$RUNNER_TEMP/web-rollout-attempted"; then
-            FLY_API_TOKEN="$WEB_TOKEN" flyctl deploy js/app \
+            FLY_API_TOKEN="$WEB_TOKEN" flyctl deploy platform/web \
               --image "$PREVIOUS_WEB_IMAGE" --ha=false --strategy rolling \
               --skip-release-command \
               --config "$GITHUB_WORKSPACE/deploy/fly/web.fly.toml" || rollback_failed=1
