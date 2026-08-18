@@ -112,7 +112,7 @@ function NotaryCard() {
   const ciphertext = useCiphertextFrame();
   return (
     <section className="relay-node relay-node--notary">
-      <b>LLM NOTARY</b>
+      <b>REMOTE NOTARY</b>
       <strong>
         {ciphertext.split('\n').map((line, index) => (
           <span key={line}>
