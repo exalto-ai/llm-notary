@@ -609,7 +609,7 @@ function AccountConnectionCard({
             {api?.connection_state === 'reauthorization_required'
               ? 'The local authorization expired or was revoked. Reconnect to restore hosted credits and account-owned sharing.'
               : unavailable
-                ? 'The account service could not be reached. Local captures and verification remain available.'
+                ? 'The account service could not be reached. Local Traces and verification remain available.'
                 : 'Connect an account to see hosted credits and use account-owned sharing.'}
           </Text>
           <Group>

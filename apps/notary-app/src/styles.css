@@ -167,7 +167,7 @@ h1, h2, p { margin: 0; }
 .native-card > header h2 { margin-top: 3px; font-size: 15px; font-weight: 650; }
 .native-card > header > span { color: var(--tertiary); font-size: 10px; }
 .section-label { color: var(--tertiary); font-size: 9px; font-weight: 600; letter-spacing: .035em; text-transform: uppercase; }
-.capture-counts { display: grid; grid-template-columns: repeat(3, 1fr); border-top: 1px solid var(--separator-soft); border-bottom: 1px solid var(--separator-soft); }
+.capture-counts { display: grid; grid-template-columns: repeat(4, 1fr); border-top: 1px solid var(--separator-soft); border-bottom: 1px solid var(--separator-soft); }
 .capture-counts button { position: relative; display: grid; min-height: 100px; align-content: center; gap: 3px; padding: 14px 16px; border: 0; background: transparent; text-align: left; cursor: default; }
 .capture-counts button + button { border-left: 1px solid var(--separator-soft); }
 .capture-counts button:hover { background: var(--surface-hover); }
@@ -248,6 +248,8 @@ h1, h2, p { margin: 0; }
 .update-block-note { color: var(--orange); }
 .compact-rows .preference-row { min-height: 42px; }
 .compact-rows code { color: var(--secondary); font-size: 9px; }
+.service-backed-settings .preference-note { margin-bottom: 10px; border: 1px solid var(--separator-soft); border-radius: 8px; }
+.service-backed-settings .workspace-frame { height: 720px; overflow: hidden; border: 1px solid var(--separator); border-radius: 11px; }
 
 .workspace-frame { position: relative; width: 100%; height: 100%; background: var(--surface); }
 .workspace-frame iframe { position: relative; z-index: 1; display: block; width: 100%; height: 100%; border: 0; background: var(--surface); }

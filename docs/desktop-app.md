@@ -1,7 +1,7 @@
 # Desktop app
 
-The macOS app is the guided way to run LLM Notary. It packages setup, service
-controls, and the local capture workspace in one native application. Normal use
+The macOS app is the guided way to run Notary. It packages setup, service
+controls, and the local Trace workspace in one native application. Normal use
 does not require a terminal or a separate browser window.
 
 ## Install
@@ -9,9 +9,9 @@ does not require a terminal or a separate browser window.
 The current app requires an Apple silicon Mac (M1 or newer) running macOS 12
 Monterey or later.
 
-1. Choose **Download for macOS** on the [LLM Notary website](https://notary.exalto.ai/).
+1. Choose **Download for macOS** on the [Notary by Exalto website](https://notary.exalto.ai/).
 2. Open the downloaded DMG.
-3. Move LLM Notary to Applications, then launch it.
+3. Move Notary to Applications, then launch it.
 
 Production downloads are signed with a Developer ID certificate, notarized by
 Apple, and stapled for offline Gatekeeper checks. Each successful production
@@ -26,20 +26,20 @@ capture workspace. Users do not need to open a localhost page in a browser.
 Closing the window removes the app from the Dock and leaves the menu-bar
 controller running; opening it from the menu bar restores the regular app
 window. Quitting the app asks a daemon that it started to stop accepting new
-work, waits for open response streams and the currently running finalization to
+work, waits for open response streams and the currently running notarization to
 finish, and then exits. It never force-kills the service if draining takes too
 long. Once onboarding is complete, later app launches start the bundled
 service automatically for Keychain and empty-passphrase vaults. A protected
 passphrase vault opens locked and starts capture only after the user unlocks it.
 
-The native Settings screen and the checked **Capture requests** menu-bar item
+The service-backed Settings screen and the checked **Capture requests** menu-bar item
 read and change the daemon-owned setting. On uses the remote notary and creates
 private captures. Off leaves the service and loopback provider routes running,
 but sends later requests directly from the daemon to the fixed provider and
 creates no evidence. The home status and route diagram distinguish this state
 from both **Ready to capture** and **Service stopped**. The menu item is
 disabled when the daemon is unreachable; the desktop process does not keep a
-second preference. Existing captures can still be browsed, finalized,
+second preference. Existing traces can still be browsed, notarized,
 verified, and shared while capture is off.
 
 First run detects the local agent config, capture vault, and service before it
@@ -59,7 +59,7 @@ arbitrary remote pages.
 After the local service starts, onboarding offers an optional hosted-account
 connection. The approval page opens in the system browser, so the desktop app
 never handles the hosted sign-in password or provider credentials. Skipping the
-step does not affect local capture, finalization, or verification.
+step does not affect local capture, notarization, or verification.
 
 Settings shows the same account connection card after onboarding. It identifies
 the connected account and sign-in provider, device or API-key mode, plan and
@@ -75,7 +75,7 @@ hosted account settings and is never revoked by the local app.
 Choosing a provider during setup shows and copies the local base URL; it does
 not reconfigure or sign in to the vendor client. Subscription-backed capture is
 supported and live-tested with Codex CLI using its saved ChatGPT login and
-Claude Code using its saved claude.ai login. The LLM Notary app can supervise
+Claude Code using its saved claude.ai login. Notary can supervise
 the proxy while either CLI sends requests through it.
 
 This does not intercept traffic from vendor applications automatically. Native
@@ -97,9 +97,9 @@ The app never installs or restarts on its own. It shows **Update ready** and
 keeps the verified download until the user chooses **Restart to update** in
 Settings. Background checks discard a downloaded build if a newer signed
 channel revision withdraws or replaces it. Restart is unavailable during a
-capture or finalization. On click, the app authenticates `latest` again, checks
+capture or notarization. On click, the app authenticates `latest` again, checks
 activity again, asks its managed daemon to stop accepting new work, waits for
-open streams, detached capture sealing, and the current finalization to finish,
+open streams, detached capture sealing, and the current notarization to finish,
 installs the application, and reopens it. A daemon started outside the app is
 never stopped or replaced by this flow. A protected passphrase vault reopens
 locked after the update and requires the passphrase before capture resumes.
@@ -134,25 +134,28 @@ existing captures.
 
 ## Develop from source
 
-The desktop app is built with Tauri 2. Its source stays portable so Windows and
-Linux packaging can follow without replacing the application shell.
+The desktop app is built with Tauri 2 under the private package and executable
+name `notary-app`. Its application identifier is `ai.exalto.notary`; the
+Milestone 2 prototype does not migrate an older desktop application identity.
+The source stays portable so Windows and Linux packaging can follow without
+replacing the application shell.
 
 Install the desktop dependencies once:
 
 ```bash
-npm --prefix js/desktop install
+npm --prefix apps/notary-app install
 ```
 
 Start the Tauri development app with a debug `notaryd` sidecar:
 
 ```bash
-npm --prefix js/desktop run tauri:dev
+npm --prefix apps/notary-app run tauri:dev
 ```
 
 Build a release application bundle and DMG with a release sidecar:
 
 ```bash
-npm --prefix js/desktop run tauri:build
+npm --prefix apps/notary-app run tauri:build
 ```
 
 The command creates the native bundle and DMG. Local builds use a Developer ID
@@ -193,9 +196,9 @@ though macOS is the first supported package.
 ## Validate
 
 ```bash
-npm --prefix js/desktop run build
-cargo check -p llm-notary-desktop
-npm --prefix js/desktop run tauri:build:debug
+npm --prefix apps/notary-app run build
+cargo check -p notary-app
+npm --prefix apps/notary-app run tauri:build:debug
 ```
 
 The native lifecycle should also be exercised on clean config, data, and vault

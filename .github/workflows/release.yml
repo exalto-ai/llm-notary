@@ -160,12 +160,12 @@ jobs:
         with:
           node-version: 24
           cache: npm
-          cache-dependency-path: js/desktop/package-lock.json
+          cache-dependency-path: apps/notary-app/package-lock.json
       - uses: actions/download-artifact@v8
         with:
           path: release
           merge-multiple: true
-      - run: npm --prefix js/desktop ci
+      - run: npm --prefix apps/notary-app ci
       - name: Allocate the next authenticated channel revision
         id: channel
         run: |
@@ -217,7 +217,7 @@ jobs:
             --published-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
             --public-origin "$PUBLIC_ORIGIN" \
             --output release/release.json
-          npm --prefix js/desktop exec -- tauri signer sign "$(pwd)/release/release.json"
+          npm --prefix apps/notary-app exec -- tauri signer sign "$(pwd)/release/release.json"
           test -s release/release.json.sig
           (cd release && sha256sum release.json > release.json.sha256)
           node scripts/release-manifest.mjs \
@@ -227,7 +227,7 @@ jobs:
             --manifest-url "$PUBLIC_ORIGIN/downloads/cli/builds/$BUILD_ID/release.json" \
             --signature release/release.json.sig \
             --output release/channel.payload.json
-          npm --prefix js/desktop exec -- tauri signer sign "$(pwd)/release/channel.payload.json"
+          npm --prefix apps/notary-app exec -- tauri signer sign "$(pwd)/release/channel.payload.json"
           test -s release/channel.payload.json.sig
           node scripts/release-manifest.mjs \
             --envelope 1 \

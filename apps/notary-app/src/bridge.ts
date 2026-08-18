@@ -206,20 +206,6 @@ export async function restartDaemon(): Promise<void> {
   await invoke('restart_daemon');
 }
 
-export async function setCaptureEnabled(enabled: boolean): Promise<boolean> {
-  if (isTauri()) return invoke<boolean>('set_capture_enabled', { enabled });
-  const forced = forcedState();
-  if (forced) return enabled;
-  const response = await fetch('/admin-api/v1/settings/capture', {
-    method: 'PUT',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ enabled }),
-  });
-  if (!response.ok) throw new Error('The local service could not change capture mode.');
-  const setting = await response.json() as { enabled: boolean };
-  return setting.enabled;
-}
-
 export async function getUpdateState(): Promise<DesktopUpdateState> {
   if (!isTauri()) {
     const preview = new URLSearchParams(window.location.search).get('update');
@@ -269,14 +255,14 @@ export async function installUpdateAndRestart(): Promise<void> {
 }
 
 export async function getLaunchAtLogin(): Promise<boolean> {
-  if (!isTauri()) return localStorage.getItem('llm-notary-launch-at-login') === 'true';
+  if (!isTauri()) return localStorage.getItem('notary-launch-at-login') === 'true';
   const { isEnabled } = await import('@tauri-apps/plugin-autostart');
   return isEnabled();
 }
 
 export async function setLaunchAtLogin(enabled: boolean): Promise<void> {
   if (!isTauri()) {
-    localStorage.setItem('llm-notary-launch-at-login', String(enabled));
+    localStorage.setItem('notary-launch-at-login', String(enabled));
     return;
   }
   const plugin = await import('@tauri-apps/plugin-autostart');

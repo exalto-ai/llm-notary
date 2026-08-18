@@ -92,7 +92,7 @@ def main() -> int:
     except (FileNotFoundError, RuntimeError, subprocess.CalledProcessError) as error:
         failures.append(f"could not inspect the Git index: {error}")
 
-    forbidden = ["../platform", "../js/desktop", "../.github"]
+    forbidden = ["../platform", "../apps/notary-app", "../.github"]
     for path in publishable_paths():
         if path == pathlib.Path(__file__).resolve():
             continue

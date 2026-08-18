@@ -2,7 +2,7 @@
 members = [
     "platform/crates/notary-api",
     "platform/crates/notary-server-platform-adapter",
-    "js/desktop/src-tauri",
+    "apps/notary-app/src-tauri",
 ]
 exclude = ["runtime"]
 resolver = "2"
