@@ -132,20 +132,20 @@ does not claim that a local runtime executed the tool.
 Verify a retained Notarized Trace through the daemon:
 
 ```bash
-llm-notary traces verify trc-example
+notaryctl traces verify trc-example
 ```
 
 Verify a portable file through the daemon without importing or retaining it:
 
 ```bash
-llm-notary traces verify ./trc-example.llmtrace
+notaryctl traces verify ./trc-example.llmtrace
 ```
 
 Path-based verification selects a key from the daemon's configured or cached
 trust by default. For an explicit self-hosted trust anchor:
 
 ```bash
-llm-notary traces verify ./trc-example.llmtrace --trusted-notary-key 02...
+notaryctl traces verify ./trc-example.llmtrace --trusted-notary-key 02...
 ```
 
 Full verification checks canonical archive bytes, entry hashes, trust-key

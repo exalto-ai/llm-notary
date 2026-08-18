@@ -81,7 +81,7 @@ jobs:
         with:
           key: cli-${{ matrix.target }}
       - name: Build release binaries
-        run: cargo build --manifest-path runtime/Cargo.toml --target-dir target --locked --release --target ${{ matrix.target }} -p llm-notary-cli --bin llm-notary -p notaryd --bin notaryd
+        run: cargo build --manifest-path runtime/Cargo.toml --target-dir target --locked --release --target ${{ matrix.target }} -p notaryctl --bin notaryctl -p notaryd --bin notaryd
       - name: Exercise Windows trust-store replacement
         if: runner.os == 'Windows'
         run: cargo test --manifest-path runtime/Cargo.toml --target-dir target --locked --release --target ${{ matrix.target }} -p notaryd service::registry::tests::write_store_atomically_replaces_an_existing_file
@@ -93,15 +93,15 @@ jobs:
           TARGET: ${{ matrix.target }}
         run: |
           set -euo pipefail
-          version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' runtime/crates/llm-notary-cli/Cargo.toml | head -1)"
+          version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' runtime/crates/notaryctl/Cargo.toml | head -1)"
           test -n "$version"
-          folder="llm-notary-${version}-${ASSET}"
+          folder="notary-runtime-${version}-${ASSET}"
           mkdir "$folder"
           suffix=""
           if [[ "$TARGET" == *windows* ]]; then suffix=".exe"; fi
-          cp "target/$TARGET/release/llm-notary${suffix}" "$folder/"
+          cp "target/$TARGET/release/notaryctl${suffix}" "$folder/"
           cp "target/$TARGET/release/notaryd${suffix}" "$folder/"
-          "target/$TARGET/release/llm-notary${suffix}" --version | grep -F "$LLM_NOTARY_BUILD_ID" >/dev/null
+          "target/$TARGET/release/notaryctl${suffix}" --version | grep -F "$LLM_NOTARY_BUILD_ID" >/dev/null
           "target/$TARGET/release/notaryd${suffix}" --version | grep -F "$LLM_NOTARY_BUILD_ID" >/dev/null
           cp runtime/LICENSE-APACHE runtime/LICENSE-MIT runtime/THIRD-PARTY-NOTICES.md "$folder/"
           if [[ "$ARCHIVE" == "zip" ]]; then
@@ -118,13 +118,13 @@ jobs:
           fi
           mkdir release
           mv "$archive" "${archive}.sha256" release/
-          cp "target/$TARGET/release/llm-notary${suffix}" "release/llm-notary-${ASSET}${suffix}"
+          cp "target/$TARGET/release/notaryctl${suffix}" "release/notaryctl-${ASSET}${suffix}"
           cp "target/$TARGET/release/notaryd${suffix}" "release/notaryd-${ASSET}${suffix}"
           if command -v sha256sum >/dev/null; then
-            (cd release && sha256sum "llm-notary-${ASSET}${suffix}" > "llm-notary-${ASSET}${suffix}.sha256")
+            (cd release && sha256sum "notaryctl-${ASSET}${suffix}" > "notaryctl-${ASSET}${suffix}.sha256")
             (cd release && sha256sum "notaryd-${ASSET}${suffix}" > "notaryd-${ASSET}${suffix}.sha256")
           else
-            (cd release && shasum -a 256 "llm-notary-${ASSET}${suffix}" > "llm-notary-${ASSET}${suffix}.sha256")
+            (cd release && shasum -a 256 "notaryctl-${ASSET}${suffix}" > "notaryctl-${ASSET}${suffix}.sha256")
             (cd release && shasum -a 256 "notaryd-${ASSET}${suffix}" > "notaryd-${ASSET}${suffix}.sha256")
           fi
       - uses: actions/upload-artifact@v7
@@ -208,7 +208,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
           set -euo pipefail
-          version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' runtime/crates/llm-notary-cli/Cargo.toml | head -1)"
+          version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' runtime/crates/notaryctl/Cargo.toml | head -1)"
           node scripts/release-manifest.mjs \
             --release-dir release \
             --build-id "$BUILD_ID" \
@@ -284,22 +284,22 @@ jobs:
             echo "the latest pointer may be published only from main" >&2
             exit 1
           fi
-          version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' runtime/crates/llm-notary-cli/Cargo.toml | head -1)"
+          version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' runtime/crates/notaryctl/Cargo.toml | head -1)"
           test -n "$version"
           for asset in \
-            "llm-notary-${version}-linux-x86_64.tar.gz" \
-            "llm-notary-${version}-linux-aarch64.tar.gz" \
-            "llm-notary-${version}-darwin-aarch64.tar.gz" \
-            "llm-notary-${version}-windows-x86_64.zip" \
+            "notary-runtime-${version}-linux-x86_64.tar.gz" \
+            "notary-runtime-${version}-linux-aarch64.tar.gz" \
+            "notary-runtime-${version}-darwin-aarch64.tar.gz" \
+            "notary-runtime-${version}-windows-x86_64.zip" \
             "LLM-Notary-macos-arm64.dmg" \
             "LLM-Notary-macos-arm64.app.tar.gz" \
-            "llm-notary-linux-x86_64" \
+            "notaryctl-linux-x86_64" \
             "notaryd-linux-x86_64" \
-            "llm-notary-linux-aarch64" \
+            "notaryctl-linux-aarch64" \
             "notaryd-linux-aarch64" \
-            "llm-notary-darwin-aarch64" \
+            "notaryctl-darwin-aarch64" \
             "notaryd-darwin-aarch64" \
-            "llm-notary-windows-x86_64.exe" \
+            "notaryctl-windows-x86_64.exe" \
             "notaryd-windows-x86_64.exe" \
             "release.json"; do
             test -f "release/$asset"

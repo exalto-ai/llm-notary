@@ -1,5 +1,5 @@
 #!/bin/sh
-# Install the latest LLM Notary CLI for Apple silicon macOS or Linux.
+# Install the latest Notary command-line tools for Apple silicon macOS or Linux.
 set -eu
 
 download_root="${LLM_NOTARY_DOWNLOAD_ROOT:-https://notary.exalto.ai/downloads/cli}"
@@ -8,7 +8,7 @@ install_dir="${LLM_NOTARY_INSTALL_DIR:-${HOME}/.local/bin}"
 
 case "$channel" in
   ""|.*|*..*|*[!a-zA-Z0-9._-]*)
-    echo "Invalid LLM Notary release channel: $channel" >&2
+    echo "Invalid Notary release channel: $channel" >&2
     exit 1
     ;;
 esac
@@ -19,7 +19,7 @@ machine="$(uname -m)"
 case "$system" in
   Darwin) platform="darwin" ;;
   Linux) platform="linux" ;;
-  *) echo "LLM Notary supports macOS and Linux through this installer." >&2; exit 1 ;;
+  *) echo "Notary supports macOS and Linux through this installer." >&2; exit 1 ;;
 esac
 
 case "$machine" in
@@ -29,7 +29,7 @@ case "$machine" in
 esac
 
 if [ "$platform" = "darwin" ] && [ "$architecture" != "aarch64" ]; then
-  echo "LLM Notary supports Apple silicon Macs; Intel Macs are not supported." >&2
+  echo "Notary supports Apple silicon Macs; Intel Macs are not supported." >&2
   exit 1
 fi
 
@@ -53,7 +53,7 @@ case "$version" in
     ;;
 esac
 
-archive="llm-notary-${version}-${platform}-${architecture}.tar.gz"
+archive="notary-runtime-${version}-${platform}-${architecture}.tar.gz"
 build_url="$download_root/builds/$build_id"
 temporary_dir="$(mktemp -d)"
 trap 'rm -rf "$temporary_dir"' EXIT INT TERM
@@ -73,10 +73,10 @@ fi
 
 tar -xzf "$temporary_dir/$archive" -C "$temporary_dir"
 mkdir -p "$install_dir"
-install -m 0755 "$temporary_dir/llm-notary-${version}-${platform}-${architecture}/llm-notary" "$install_dir/llm-notary"
-install -m 0755 "$temporary_dir/llm-notary-${version}-${platform}-${architecture}/notaryd" "$install_dir/notaryd"
+install -m 0755 "$temporary_dir/notary-runtime-${version}-${platform}-${architecture}/notaryctl" "$install_dir/notaryctl"
+install -m 0755 "$temporary_dir/notary-runtime-${version}-${platform}-${architecture}/notaryd" "$install_dir/notaryd"
 
-echo "Installed LLM Notary $version from $channel (llm-notary and notaryd) to $install_dir"
+echo "Installed Notary $version from $channel (notaryctl and notaryd) to $install_dir"
 case ":$PATH:" in
   *":$install_dir:"*) ;;
   *) echo "Add $install_dir to your PATH, then run: notaryd" ;;

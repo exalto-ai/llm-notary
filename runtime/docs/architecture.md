@@ -17,7 +17,7 @@ seams, but those implementations are not part of this workspace.
 | --- | --- | --- | --- |
 | Provider client | yes | provider credential | Sends an ordinary provider request to a fixed local route |
 | `notaryd` | yes | vault, metadata, operations, artifacts, trust cache | Proxies requests, captures private state, notarizes, and verifies |
-| `llm-notary` | only API responses requested by the user | none | Calls the daemon's versioned administration API |
+| `notaryctl` | only API responses requested by the user | none | Calls the daemon's versioned administration API |
 | Local dashboard | only safe metadata store fields and deliberately opened notarized disclosures | browser session preference | Uses the same administration API as the CLI |
 | `notary-server` | no | signing key | Resolves the provider, relays encrypted TLS records, witnesses sessions, and completes proof work |
 | Model provider | yes | provider-owned | Serves an ordinary HTTPS request without an LLM Notary integration |
@@ -29,7 +29,7 @@ credentials, prompts, and response plaintext. The remote notary learns the
 selected provider hostname, ciphertext sizes, timing, and protocol metadata,
 but it must not receive credential values or application plaintext.
 
-`llm-notary` is intentionally a thin REST client. It does not open the metadata store,
+`notaryctl` is intentionally a thin REST client. It does not open the metadata store,
 vault, captures, or protocol implementation directly. The local dashboard uses
 the same generated OpenAPI contract and never receives a hosted credential or
 a decrypted source capture.

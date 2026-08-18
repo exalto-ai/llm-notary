@@ -28,10 +28,10 @@ Install the two local programs independently:
 
 ```bash
 cargo install --locked --path crates/notaryd --bin notaryd
-cargo install --locked --path crates/llm-notary-cli --bin llm-notary
+cargo install --locked --path crates/notaryctl --bin notaryctl
 ```
 
-Run `notaryd`, route a supported provider client through `127.0.0.1:8787`, and inspect private captures through the dashboard at `127.0.0.1:8788` or the `llm-notary` command.
+Run `notaryd`, route a supported provider client through `127.0.0.1:8787`, and inspect private captures through the dashboard at `127.0.0.1:8788` or the `notaryctl` command.
 
 ## Trust boundary
 

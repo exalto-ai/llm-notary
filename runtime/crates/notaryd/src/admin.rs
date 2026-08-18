@@ -2362,7 +2362,7 @@ fn unauthorized_response() -> Response {
     let mut response = ApiError::unauthorized().into_response();
     response.headers_mut().insert(
         header::WWW_AUTHENTICATE,
-        HeaderValue::from_static("Basic realm=\"LLM Notary\", charset=\"UTF-8\""),
+        HeaderValue::from_static("Basic realm=\"Notary\", charset=\"UTF-8\""),
     );
     response
 }
@@ -3079,7 +3079,7 @@ impl ApiError {
         Self {
             status: StatusCode::CONFLICT,
             code: "api_key_mode",
-            message: "Browser login and logout are unavailable while the daemon uses an injected API key",
+            message: "Browser account connection and disconnection are unavailable while the daemon uses an injected API key",
         }
     }
     fn notarization_ineligible() -> Self {
@@ -3100,7 +3100,7 @@ impl ApiError {
         Self {
             status: StatusCode::CONFLICT,
             code: "account_authentication_required",
-            message: "LLM Notary account connection must be renewed",
+            message: "The Notary account connection must be renewed",
         }
     }
     fn service_unavailable(code: &'static str) -> Self {
@@ -3433,7 +3433,13 @@ mod tests {
                 .await
                 .unwrap();
             assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-            assert!(response.headers().contains_key(header::WWW_AUTHENTICATE));
+            assert_eq!(
+                response
+                    .headers()
+                    .get(header::WWW_AUTHENTICATE)
+                    .and_then(|value| value.to_str().ok()),
+                Some("Basic realm=\"Notary\", charset=\"UTF-8\"")
+            );
             let body = response.into_body().collect().await.unwrap().to_bytes();
             assert!(!String::from_utf8_lossy(&body).contains("deliberately-wrong-secret"));
         }
@@ -3474,6 +3480,18 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[test]
+    fn account_errors_use_the_current_product_and_action_vocabulary() {
+        assert_eq!(
+            ApiError::api_key_mode().message,
+            "Browser account connection and disconnection are unavailable while the daemon uses an injected API key"
+        );
+        assert_eq!(
+            ApiError::account_authentication_required().message,
+            "The Notary account connection must be renewed"
+        );
     }
 
     #[tokio::test]

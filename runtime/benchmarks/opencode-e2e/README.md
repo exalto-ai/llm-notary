@@ -46,17 +46,17 @@ Build and run from the repository root:
 ```bash
 cargo build --manifest-path runtime/Cargo.toml --target-dir target \
   --release --locked -p notaryd --bin notaryd \
-  -p llm-notary-cli --bin llm-notary
+  -p notaryctl --bin notaryctl
 npm install --global opencode-ai@1.18.11
 
 set -a
 source .env
 set +a
 
-result=/tmp/llm-notary-opencode-e2e-result.json
+result=/tmp/notary-opencode-e2e-result.json
 set +e
 python3 runtime/benchmarks/opencode-e2e/run.py \
-  --llm-notary target/release/llm-notary \
+  --notaryctl target/release/notaryctl \
   --notaryd target/release/notaryd \
   --result "$result"
 status=$?
@@ -70,7 +70,7 @@ override a known secret, credential field, disclosed header, malformed package,
 or failed verification. Unit tests do neither:
 
 ```bash
-python3 benchmarks/opencode-e2e/test_runner.py -v
+python3 runtime/benchmarks/opencode-e2e/test_runner.py -v
 ```
 
 ## GitHub Actions

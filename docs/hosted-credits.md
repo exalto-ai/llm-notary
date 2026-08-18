@@ -127,7 +127,7 @@ socket address, so they cannot choose a subject with a forwarding header.
 ## Account and CLI views
 
 The hosted account response, dashboard, local-service account response, and
-`llm-notary whoami --json` report the same plan, billing status, separate capture
+`notaryctl account show --json` report the same plan, billing status, separate capture
 and notarization balances, reset date, and bounded activity history. The hosted
 dashboard also shows current trace storage and subscription controls. History
 labels and errors omit address subjects, record digests, tickets, credentials,

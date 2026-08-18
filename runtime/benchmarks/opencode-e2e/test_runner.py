@@ -97,9 +97,9 @@ class GateAndClassificationTests(unittest.TestCase):
         self.assertEqual(arguments.notaryd, "/tmp/notaryd")
         self.assertFalse(hasattr(arguments, "llm_notaryd"))
 
-    def test_notarization_polls_the_canonical_operation_command(self) -> None:
+    def test_notarization_uses_the_trace_wait_command(self) -> None:
         canary = run.Canary.__new__(run.Canary)
-        canary.cli = ["llm-notary", "--json"]
+        canary.cli = ["notaryctl", "--json"]
         canary.environment = {}
         canary.arguments = SimpleNamespace(notarization_timeout=60)
 
@@ -108,12 +108,12 @@ class GateAndClassificationTests(unittest.TestCase):
                 run,
                 "run_json",
                 side_effect=[
-                    {"operation": {"operation_id": "op-1", "state": "queued"}},
-                    RuntimeError("stop after operation poll"),
+                    {"operation": {"operation_id": "op-1", "state": "succeeded"}},
+                    RuntimeError("stop after notarization"),
                 ],
             ) as run_json,
             patch.object(run.time, "sleep"),
-            self.assertRaisesRegex(RuntimeError, "stop after operation poll"),
+            self.assertRaisesRegex(RuntimeError, "stop after notarization"),
         ):
             canary.notarize_verify_share(
                 [{"trace_id": "trc-1"}],
@@ -121,15 +121,15 @@ class GateAndClassificationTests(unittest.TestCase):
             )
 
         self.assertEqual(
-            run_json.call_args_list[1].args[0],
-            ["llm-notary", "--json", "operation", "op-1"],
+            run_json.call_args_list[0].args[0],
+            ["notaryctl", "--json", "traces", "notarize", "trc-1", "--wait"],
         )
 
     def test_notarization_uses_canonical_verification_contract(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             canary = run.Canary.__new__(run.Canary)
             canary.cli = [
-                "llm-notary",
+                "notaryctl",
                 "--json",
                 "--config",
                 "/private/config.toml",
@@ -177,7 +177,7 @@ class GateAndClassificationTests(unittest.TestCase):
         self.assertEqual(
             run_json.call_args_list[-1].args[0][:-1],
             [
-                "llm-notary",
+                "notaryctl",
                 "--json",
                 "--config",
                 "/private/config.toml",

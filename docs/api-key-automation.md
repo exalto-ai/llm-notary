@@ -16,7 +16,7 @@ The supported scopes are:
 
 | Scope | Permitted platform operations |
 | --- | --- |
-| `account:read` | Read the authenticated identity used by `whoami` and connection status |
+| `account:read` | Read the authenticated identity used by `account show` and connection status |
 | `traces:read` | Read hosted Traces owned by the account |
 | `traces:share` | Create, upload, complete, and manage hosted Traces |
 | `capture:request` | Request one-operation capture admission tickets |
@@ -67,7 +67,7 @@ configured platform API. The remote notary receives the resulting short-lived,
 one-time admission ticket—not the API key or any platform access credential.
 
 Browser-driven login and logout are unavailable while an injected API key is
-active. Revoke the key from the hosted dashboard. `llm-notary whoami` and the
+active. Revoke the key from the hosted dashboard. `notaryctl account show` and the
 local Traces view report the account, credential kind, and key name
 without displaying the key.
 
@@ -94,7 +94,7 @@ jobs:
       - name: Install LLM Notary
         run: |
           cargo install --locked --path crates/notaryd --bin notaryd
-          cargo install --locked --path crates/llm-notary-cli --bin llm-notary
+          cargo install --locked --path crates/notaryctl --bin notaryctl
       - name: Start the local service
         env:
           VAULT_PASSPHRASE: ${{ secrets.LLM_NOTARY_VAULT_PASSPHRASE }}
@@ -108,7 +108,7 @@ jobs:
           done
           exit 1
       - name: Confirm the account connection
-        run: llm-notary whoami
+        run: notaryctl account show
 ```
 
 Do not print the daemon environment or upload its log, catalog, encrypted

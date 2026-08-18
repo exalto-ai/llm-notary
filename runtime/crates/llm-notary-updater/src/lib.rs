@@ -44,13 +44,13 @@ const CHANNEL: &str = "latest";
 const MANIFEST_LIMIT: usize = 512 * 1024;
 const MAX_ARTIFACT_BYTES: u64 = 1024 * 1024 * 1024;
 const PUBLIC_KEY: &str = include_str!("../../../config/updater-public-key.txt");
-const JOURNAL_NAME: &str = ".llm-notary-update.json";
-const CLI_BACKUP_NAME: &str = ".llm-notary.update-backup";
+const JOURNAL_NAME: &str = ".notary-update.json";
+const CLI_BACKUP_NAME: &str = ".notaryctl.update-backup";
 const DAEMON_BACKUP_NAME: &str = ".notaryd.update-backup";
 const CHANNEL_STATE_NAME: &str = "update-channel.json";
 const CHANNEL_LOCK_NAME: &str = ".update-channel.lock";
 #[cfg(windows)]
-const WINDOWS_RESULT_NAME: &str = ".llm-notary-update-result.json";
+const WINDOWS_RESULT_NAME: &str = ".notary-update-result.json";
 
 /// Finds the shared local configuration directory without depending on the
 /// daemon's full configuration model.
@@ -69,7 +69,7 @@ pub fn default_config_path() -> Result<PathBuf> {
     } else {
         bail!("could not determine a configuration directory")
     };
-    Ok(base.join("llm-notary").join("config.toml"))
+    Ok(base.join("notary").join("config.toml"))
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -114,8 +114,8 @@ pub struct ReleaseArtifact {
 #[serde(deny_unknown_fields)]
 pub struct ReleasePlatform {
     pub archive: ReleaseArtifact,
-    pub llm_notary: ReleaseArtifact,
-    pub llm_notaryd: ReleaseArtifact,
+    pub notaryctl: ReleaseArtifact,
+    pub notaryd: ReleaseArtifact,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -452,8 +452,7 @@ fn accept_channel_revision(
             serde_json::from_slice(&fs::read(path).context("reading the update channel state")?)
                 .context("the update channel state is malformed")?;
         ensure!(
-            state.schema_version == "llm-notary/update-channel-state/v1"
-                && state.channel == CHANNEL,
+            state.schema_version == "notary/update-channel-state/v1" && state.channel == CHANNEL,
             "the update channel state is unsupported"
         );
         ensure!(
@@ -469,7 +468,7 @@ fn accept_channel_revision(
         }
     }
     let bytes = serde_json::to_vec(&ChannelState {
-        schema_version: "llm-notary/update-channel-state/v1".into(),
+        schema_version: "notary/update-channel-state/v1".into(),
         channel: pointer.channel.clone(),
         channel_revision: pointer.channel_revision,
         signed_sha256,
@@ -505,7 +504,7 @@ fn decode_wrapped_text(value: &str, name: &str) -> Result<String> {
 
 fn update_http_client() -> Result<reqwest::Client> {
     reqwest::Client::builder()
-        .user_agent(concat!("llm-notary-updater/", env!("CARGO_PKG_VERSION")))
+        .user_agent(concat!("notary-updater/", env!("CARGO_PKG_VERSION")))
         .connect_timeout(Duration::from_secs(5))
         .timeout(Duration::from_secs(20))
         .redirect(reqwest::redirect::Policy::limited(5))
@@ -576,12 +575,12 @@ fn validate_manifest(manifest: &ReleaseManifest) -> Result<()> {
             .with_context(|| format!("the release is missing {platform}"))?;
         validate_artifact(&artifacts.archive, &manifest.build_id, None)?;
         validate_artifact(
-            &artifacts.llm_notary,
+            &artifacts.notaryctl,
             &manifest.build_id,
-            Some(&format!("llm-notary-{platform}{suffix}")),
+            Some(&format!("notaryctl-{platform}{suffix}")),
         )?;
         validate_artifact(
-            &artifacts.llm_notaryd,
+            &artifacts.notaryd,
             &manifest.build_id,
             Some(&format!("notaryd-{platform}{suffix}")),
         )?;
@@ -732,7 +731,7 @@ async fn install_verified_release(
         .get(platform)
         .with_context(|| format!("the release has no payloads for {platform}"))?;
     let staging = tempfile::Builder::new()
-        .prefix(".llm-notary-update-")
+        .prefix(".notary-update-")
         .tempdir_in(&install.directory)
         .with_context(|| {
             format!(
@@ -743,11 +742,11 @@ async fn install_verified_release(
     let cli_candidate = staging.path().join(cli_file_name());
     let daemon_candidate = staging.path().join(daemon_file_name());
     let client = update_http_client()?;
-    download_artifact(&client, &artifacts.llm_notary, &cli_candidate).await?;
-    download_artifact(&client, &artifacts.llm_notaryd, &daemon_candidate).await?;
+    download_artifact(&client, &artifacts.notaryctl, &cli_candidate).await?;
+    download_artifact(&client, &artifacts.notaryd, &daemon_candidate).await?;
     make_executable(&cli_candidate)?;
     make_executable(&daemon_candidate)?;
-    ensure_candidate_build(&cli_candidate, &release.manifest.build_id, "llm-notary")?;
+    ensure_candidate_build(&cli_candidate, &release.manifest.build_id, "notaryctl")?;
     ensure_candidate_build(&daemon_candidate, &release.manifest.build_id, "notaryd")?;
 
     #[cfg(unix)]
@@ -769,7 +768,7 @@ async fn install_verified_release(
     #[cfg(windows)]
     {
         let staging = staging.keep();
-        let helper = staging.join("llm-notary-update-helper.exe");
+        let helper = staging.join("notaryctl-update-helper.exe");
         fs::copy(&cli_candidate, &helper).context("creating the Windows update helper")?;
         let mut command = Command::new(&helper);
         command
@@ -895,7 +894,7 @@ struct InstallPaths {
 
 impl InstallPaths {
     fn discover() -> Result<Self> {
-        let cli = std::env::current_exe().context("locating the running llm-notary executable")?;
+        let cli = std::env::current_exe().context("locating the running notaryctl executable")?;
         let directory = cli
             .parent()
             .context("the running executable has no parent directory")?
@@ -952,9 +951,9 @@ impl InstallPaths {
 
 fn cli_file_name() -> &'static str {
     if cfg!(windows) {
-        "llm-notary.exe"
+        "notaryctl.exe"
     } else {
-        "llm-notary"
+        "notaryctl"
     }
 }
 
@@ -1003,7 +1002,7 @@ fn ensure_windows_daemon_stopped(install: &InstallPaths) -> Result<()> {
 }
 
 fn ensure_current_pair(install: &InstallPaths) -> Result<()> {
-    ensure_candidate_build(&install.cli, BUILD_ID, "llm-notary")?;
+    ensure_candidate_build(&install.cli, BUILD_ID, "notaryctl")?;
     ensure_candidate_build(&install.daemon, BUILD_ID, "notaryd")
 }
 
@@ -1063,11 +1062,11 @@ fn apply_update_transaction(
     write_journal(install, build_id, JournalPhase::ReplacingCli)?;
     if let Err(error) = replace_file(cli_candidate, &install.cli) {
         let _ = recover_interrupted_update(install);
-        return Err(error).context("installing the new llm-notary");
+        return Err(error).context("installing the new notaryctl");
     }
     sync_directory(&install.directory)?;
     write_journal(install, build_id, JournalPhase::CliReplaced)?;
-    if let Err(error) = ensure_candidate_build(&install.cli, build_id, "llm-notary")
+    if let Err(error) = ensure_candidate_build(&install.cli, build_id, "notaryctl")
         .and_then(|_| ensure_candidate_build(&install.daemon, build_id, "notaryd"))
     {
         let rollback = rollback_to_backups(install);
@@ -1135,7 +1134,7 @@ fn rollback_to_backups(install: &InstallPaths) -> Result<()> {
 
 fn write_journal(install: &InstallPaths, build_id: &str, phase: JournalPhase) -> Result<()> {
     let bytes = serde_json::to_vec(&UpdateJournal {
-        schema_version: "llm-notary/update-journal/v1".into(),
+        schema_version: "notary/update-journal/v1".into(),
         build_id: build_id.into(),
         phase,
     })?;
@@ -1155,7 +1154,7 @@ fn recover_interrupted_update(install: &InstallPaths) -> Result<()> {
         serde_json::from_slice(&fs::read(&install.journal).context("reading the update journal")?)
             .context("the update journal is malformed")?;
     ensure!(
-        journal.schema_version == "llm-notary/update-journal/v1",
+        journal.schema_version == "notary/update-journal/v1",
         "the update journal schema is unsupported"
     );
     validate_identifier(&journal.build_id, "journal build ID")?;
@@ -1169,7 +1168,7 @@ fn recover_interrupted_update(install: &InstallPaths) -> Result<()> {
             restore_backup(&install.daemon_backup, &install.daemon)?;
         }
         JournalPhase::CliReplaced => {
-            if ensure_candidate_build(&install.cli, &journal.build_id, "llm-notary").is_ok()
+            if ensure_candidate_build(&install.cli, &journal.build_id, "notaryctl").is_ok()
                 && ensure_candidate_build(&install.daemon, &journal.build_id, "notaryd").is_ok()
             {
                 return finish_transaction(install);
@@ -1299,7 +1298,7 @@ pub fn run_windows_apply_helper(
         message: if result.is_ok() {
             "The staged Windows update completed.".into()
         } else {
-            "The staged Windows update failed safely. Run llm-notary update again after stopping notaryd.".into()
+            "The staged Windows update failed safely. Run notaryctl update again after stopping notaryd.".into()
         },
     };
     let report_path = install_directory.join(WINDOWS_RESULT_NAME);
@@ -1446,11 +1445,11 @@ mod tests {
         assert!(
             require_build_url(
                 &Url::parse(
-                    "https://example.com/downloads/cli/builds/build/llm-notary-linux-x86_64"
+                    "https://example.com/downloads/cli/builds/build/notaryctl-linux-x86_64"
                 )
                 .unwrap(),
                 "build",
-                "llm-notary-linux-x86_64",
+                "notaryctl-linux-x86_64",
             )
             .is_ok()
         );
@@ -1458,7 +1457,7 @@ mod tests {
             require_build_url(
                 &Url::parse("https://example.com/downloads/cli/latest").unwrap(),
                 "build",
-                "llm-notary-linux-x86_64",
+                "notaryctl-linux-x86_64",
             )
             .is_err()
         );
@@ -1480,16 +1479,16 @@ mod tests {
     fn replaces_both_programs_and_removes_the_journal() {
         let directory = tempfile::tempdir().unwrap();
         let install = InstallPaths::from_directory(directory.path());
-        executable(&install.cli, "llm-notary", "old-build");
+        executable(&install.cli, "notaryctl", "old-build");
         executable(&install.daemon, "notaryd", "old-build");
         let cli_candidate = directory.path().join("new-cli");
         let daemon_candidate = directory.path().join("new-daemon");
-        executable(&cli_candidate, "llm-notary", "new-build");
+        executable(&cli_candidate, "notaryctl", "new-build");
         executable(&daemon_candidate, "notaryd", "new-build");
 
         apply_update_transaction(&install, &cli_candidate, &daemon_candidate, "new-build").unwrap();
 
-        ensure_candidate_build(&install.cli, "new-build", "llm-notary").unwrap();
+        ensure_candidate_build(&install.cli, "new-build", "notaryctl").unwrap();
         ensure_candidate_build(&install.daemon, "new-build", "notaryd").unwrap();
         assert!(!install.journal.exists());
         assert!(!install.cli_backup.exists());
@@ -1501,7 +1500,7 @@ mod tests {
     fn restores_the_old_pair_when_the_second_replace_fails() {
         let directory = tempfile::tempdir().unwrap();
         let install = InstallPaths::from_directory(directory.path());
-        executable(&install.cli, "llm-notary", "old-build");
+        executable(&install.cli, "notaryctl", "old-build");
         executable(&install.daemon, "notaryd", "old-build");
         let missing_cli_candidate = directory.path().join("missing-cli");
         let daemon_candidate = directory.path().join("new-daemon");
@@ -1517,7 +1516,7 @@ mod tests {
             .is_err()
         );
 
-        ensure_candidate_build(&install.cli, "old-build", "llm-notary").unwrap();
+        ensure_candidate_build(&install.cli, "old-build", "notaryctl").unwrap();
         ensure_candidate_build(&install.daemon, "old-build", "notaryd").unwrap();
         assert!(!install.journal.exists());
         assert!(!install.cli_backup.exists());
@@ -1529,13 +1528,13 @@ mod tests {
     fn recovers_a_crash_between_pair_replacements() {
         let directory = tempfile::tempdir().unwrap();
         let install = InstallPaths::from_directory(directory.path());
-        executable(&install.cli, "llm-notary", "old-build");
+        executable(&install.cli, "notaryctl", "old-build");
         executable(&install.daemon, "notaryd", "old-build");
         hard_link_backup(&install.cli, &install.cli_backup).unwrap();
         hard_link_backup(&install.daemon, &install.daemon_backup).unwrap();
         let new_cli = directory.path().join("new-cli");
         let new_daemon = directory.path().join("new-daemon");
-        executable(&new_cli, "llm-notary", "new-build");
+        executable(&new_cli, "notaryctl", "new-build");
         executable(&new_daemon, "notaryd", "new-build");
         replace_file(&new_cli, &install.cli).unwrap();
         replace_file(&new_daemon, &install.daemon).unwrap();
@@ -1543,7 +1542,7 @@ mod tests {
 
         recover_interrupted_update(&install).unwrap();
 
-        ensure_candidate_build(&install.cli, "old-build", "llm-notary").unwrap();
+        ensure_candidate_build(&install.cli, "old-build", "notaryctl").unwrap();
         ensure_candidate_build(&install.daemon, "old-build", "notaryd").unwrap();
     }
 
@@ -1552,13 +1551,13 @@ mod tests {
     fn recovery_finishes_a_fully_replaced_current_pair() {
         let directory = tempfile::tempdir().unwrap();
         let install = InstallPaths::from_directory(directory.path());
-        executable(&install.cli, "llm-notary", "old-build");
+        executable(&install.cli, "notaryctl", "old-build");
         executable(&install.daemon, "notaryd", "old-build");
         hard_link_backup(&install.cli, &install.cli_backup).unwrap();
         hard_link_backup(&install.daemon, &install.daemon_backup).unwrap();
         let new_cli = directory.path().join("new-cli");
         let new_daemon = directory.path().join("new-daemon");
-        executable(&new_cli, "llm-notary", "new-build");
+        executable(&new_cli, "notaryctl", "new-build");
         executable(&new_daemon, "notaryd", "new-build");
         replace_file(&new_cli, &install.cli).unwrap();
         replace_file(&new_daemon, &install.daemon).unwrap();
@@ -1566,7 +1565,7 @@ mod tests {
 
         recover_interrupted_update(&install).unwrap();
 
-        ensure_candidate_build(&install.cli, "new-build", "llm-notary").unwrap();
+        ensure_candidate_build(&install.cli, "new-build", "notaryctl").unwrap();
         ensure_candidate_build(&install.daemon, "new-build", "notaryd").unwrap();
         assert!(path_is_absent(&install.journal).unwrap());
         assert!(path_is_absent(&install.cli_backup).unwrap());

@@ -17,12 +17,12 @@ jobs:
       - run: python3 -m unittest tooling/test_check_boundary.py
       - name: Keep the localhost client thin
         run: |
-          if cargo tree --locked -p llm-notary-cli --edges normal --prefix none \
+          if cargo tree --locked -p notaryctl --edges normal --prefix none \
             | grep -Eq '^(notary-core|notaryd|tlsn|sqlx|rusqlite|aws-sdk-s3) '; then
-            echo 'llm-notary-cli depends on a daemon, protocol, or storage package' >&2
+            echo 'notaryctl depends on a daemon, protocol, or storage package' >&2
             exit 1
           fi
-      - run: cargo fmt --check -p notary-core -p notaryd -p llm-notary-cli -p llm-notary-updater -p notary-server
+      - run: cargo fmt --check -p notary-core -p notaryd -p notaryctl -p llm-notary-updater -p notary-server
       - run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
       - run: cargo test --locked --workspace --all-targets --all-features
 

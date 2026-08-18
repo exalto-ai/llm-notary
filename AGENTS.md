@@ -22,7 +22,7 @@ Run the checks relevant to edited code before handing work off:
 ```bash
 cargo fmt --check
 cargo fmt --manifest-path runtime/Cargo.toml --check \
-  -p notary-core -p notaryd -p llm-notary-cli \
+  -p notary-core -p notaryd -p notaryctl \
   -p llm-notary-updater -p notary-server
 cargo test -p notary-api -p notary-server-platform-adapter --all-targets --all-features
 cargo test --manifest-path runtime/Cargo.toml --workspace --all-targets --all-features

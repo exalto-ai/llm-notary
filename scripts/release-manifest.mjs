@@ -76,24 +76,24 @@ export async function createReleaseManifest({
 
   const platforms = {
     'linux-x86_64': {
-      archive: await artifact(releaseDir, buildUrl, `llm-notary-${version}-linux-x86_64.tar.gz`),
-      llm_notary: await artifact(releaseDir, buildUrl, 'llm-notary-linux-x86_64'),
-      llm_notaryd: await artifact(releaseDir, buildUrl, 'notaryd-linux-x86_64'),
+      archive: await artifact(releaseDir, buildUrl, `notary-runtime-${version}-linux-x86_64.tar.gz`),
+      notaryctl: await artifact(releaseDir, buildUrl, 'notaryctl-linux-x86_64'),
+      notaryd: await artifact(releaseDir, buildUrl, 'notaryd-linux-x86_64'),
     },
     'linux-aarch64': {
-      archive: await artifact(releaseDir, buildUrl, `llm-notary-${version}-linux-aarch64.tar.gz`),
-      llm_notary: await artifact(releaseDir, buildUrl, 'llm-notary-linux-aarch64'),
-      llm_notaryd: await artifact(releaseDir, buildUrl, 'notaryd-linux-aarch64'),
+      archive: await artifact(releaseDir, buildUrl, `notary-runtime-${version}-linux-aarch64.tar.gz`),
+      notaryctl: await artifact(releaseDir, buildUrl, 'notaryctl-linux-aarch64'),
+      notaryd: await artifact(releaseDir, buildUrl, 'notaryd-linux-aarch64'),
     },
     'darwin-aarch64': {
-      archive: await artifact(releaseDir, buildUrl, `llm-notary-${version}-darwin-aarch64.tar.gz`),
-      llm_notary: await artifact(releaseDir, buildUrl, 'llm-notary-darwin-aarch64'),
-      llm_notaryd: await artifact(releaseDir, buildUrl, 'notaryd-darwin-aarch64'),
+      archive: await artifact(releaseDir, buildUrl, `notary-runtime-${version}-darwin-aarch64.tar.gz`),
+      notaryctl: await artifact(releaseDir, buildUrl, 'notaryctl-darwin-aarch64'),
+      notaryd: await artifact(releaseDir, buildUrl, 'notaryd-darwin-aarch64'),
     },
     'windows-x86_64': {
-      archive: await artifact(releaseDir, buildUrl, `llm-notary-${version}-windows-x86_64.zip`),
-      llm_notary: await artifact(releaseDir, buildUrl, 'llm-notary-windows-x86_64.exe'),
-      llm_notaryd: await artifact(releaseDir, buildUrl, 'notaryd-windows-x86_64.exe'),
+      archive: await artifact(releaseDir, buildUrl, `notary-runtime-${version}-windows-x86_64.zip`),
+      notaryctl: await artifact(releaseDir, buildUrl, 'notaryctl-windows-x86_64.exe'),
+      notaryd: await artifact(releaseDir, buildUrl, 'notaryd-windows-x86_64.exe'),
     },
   };
   const dmg = await artifact(releaseDir, buildUrl, 'LLM-Notary-macos-arm64.dmg');

@@ -10,8 +10,8 @@ const workflowDocuments = [
   'docs/local-service.md',
   'docs/local-dashboard.md',
   'docs/agent-playbook.md',
-  'skills/llm-notary/SKILL.md',
-  'skills/llm-notary/references/workflows.md',
+  'skills/notary/SKILL.md',
+  'skills/notary/references/workflows.md',
 ];
 const workflowContent = workflowDocuments
   .map((file) => readFileSync(resolve(runtimeRoot, file), 'utf8'))
@@ -304,8 +304,8 @@ const consistencySources = [
   resolve(runtimeRoot, 'crates/notaryd/src/lib.rs'),
 ];
 const obsoleteCommand =
-  /llm-notary\s+(proxy|verify-trace|download|config|vault|list|show|verify|decode)\b/;
-const obsoleteDaemonInvocation = /^llm-notary(?:\s+--config\s+\S+)?\s*$/m;
+  /notaryctl\s+(captures|notarization|operation|operations|events|login|logout|whoami|publish|proxy|verify-trace|download|config|vault|list|show|verify|decode)\b/;
+const obsoleteDaemonInvocation = /^notaryctl(?:\s+--config\s+\S+)?\s*$/m;
 for (const file of consistencySources) {
   const source = readFileSync(file, 'utf8');
   if (obsoleteCommand.test(source) || obsoleteDaemonInvocation.test(source)) {
@@ -337,9 +337,9 @@ for (const file of consistencySources) {
 
 for (const required of [
   'notaryd',
-  'llm-notary status',
-  'llm-notary captures list',
-  'llm-notary skill install',
+  'notaryctl status',
+  'notaryctl traces list',
+  'notaryctl skill install',
   '--metadata-only',
   '--json',
 ]) {

@@ -3,7 +3,7 @@ FROM rust:1.95-slim-bookworm AS builder
 WORKDIR /app
 COPY . .
 RUN cargo build --locked --release \
-    -p llm-notary-cli --bin llm-notary \
+    -p notaryctl --bin notaryctl \
     -p notaryd --bin notaryd \
     -p notary-server --bin notary-server
 
@@ -13,8 +13,8 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /app/target/release/notaryd /usr/local/bin/notaryd
-COPY --from=builder /app/target/release/llm-notary /usr/local/bin/llm-notary
-RUN notaryd --help >/dev/null && llm-notary --help >/dev/null
+COPY --from=builder /app/target/release/notaryctl /usr/local/bin/notaryctl
+RUN notaryd --help >/dev/null && notaryctl --help >/dev/null
 ENTRYPOINT ["notaryd"]
 
 FROM daemon AS cluster
@@ -43,7 +43,7 @@ FROM builder AS daemon-e2e-builder
 
 RUN cargo build --locked --release \
     -p notaryd --features daemon-e2e --bins \
-    -p llm-notary-cli --bin llm-notary
+    -p notaryctl --bin notaryctl
 
 FROM daemon AS daemon-e2e
 
@@ -52,7 +52,7 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends curl jq openssl python3 sqlite3 \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=daemon-e2e-builder /app/target/release/notaryd /usr/local/bin/notaryd
-COPY --from=daemon-e2e-builder /app/target/release/llm-notary /usr/local/bin/llm-notary
+COPY --from=daemon-e2e-builder /app/target/release/notaryctl /usr/local/bin/notaryctl
 COPY --from=daemon-e2e-builder /app/target/release/notary-e2e-notary /usr/local/bin/notary-e2e-notary
 COPY deploy-daemon-e2e/config.toml /etc/llm-notary/config.toml
 RUN cp /etc/llm-notary/config.toml /etc/llm-notary/config-s3.toml \
