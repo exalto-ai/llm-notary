@@ -602,6 +602,20 @@ async fn capture_filters_pagination_and_counts(store: Arc<dyn MetadataStore>) {
         ids(
             &store
                 .traces(TraceFilters {
+                    status: Some("needs_attention".to_owned()),
+                    limit: 20,
+                    ..TraceFilters::default()
+                })
+                .await
+                .unwrap(),
+            |trace| &trace.trace_id,
+        ),
+        vec!["trc-filter-c"]
+    );
+    assert_eq!(
+        ids(
+            &store
+                .traces(TraceFilters {
                     notarization_status: Some("not_requested".to_owned()),
                     streaming: Some(true),
                     limit: 20,

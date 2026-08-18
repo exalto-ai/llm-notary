@@ -237,9 +237,9 @@ function notarizationPhaseLabel(phase: string) {
     case 'signing':
       return 'Requesting notary signature';
     case 'packaging':
-      return 'Building verified package';
+      return 'Building portable package';
     case 'complete':
-      return 'Verified package complete';
+      return 'Portable package complete';
     default:
       return phase.replaceAll('_', ' ');
   }
@@ -253,6 +253,32 @@ function proofPercent(operation: Operation | OperationSummary) {
 
 function traceDisplayStatus(trace: TraceSummary) {
   return trace.status ?? trace.state ?? 'unknown';
+}
+
+function traceTitle(trace: TraceSummary) {
+  const preview = trace.prompt_preview?.replace(/\s+/g, ' ').trim();
+  if (preview) return preview;
+  const providerNames: Record<string, string> = {
+    anthropic: 'Anthropic',
+    deepseek: 'DeepSeek',
+    openai: 'OpenAI',
+    openrouter: 'OpenRouter',
+  };
+  const provider = trace.provider
+    ? (providerNames[trace.provider.toLowerCase()] ?? trace.provider)
+    : 'Model provider';
+  return `${provider} request`;
+}
+
+function traceLifecycleLabel(trace: TraceSummary) {
+  if (trace.status === 'capturing') return 'Capturing';
+  if (trace.status === 'capture_failed') return 'Capture failed';
+  if (trace.state === 'notarized') return 'Notarized';
+  if (trace.status === 'notarizing') return 'Captured · Notarizing';
+  if (trace.status === 'notarization_failed') return 'Captured · Notarization failed';
+  if (trace.status === 'notarization_interrupted') return 'Captured · Notarization interrupted';
+  if (trace.state === 'captured') return 'Captured';
+  return 'Trace pending';
 }
 
 function captureStatus(trace: TraceSummary) {
@@ -1175,9 +1201,16 @@ function View({
 }) {
   switch (route.view) {
     case 'traces':
-      return <TracesView api={api} selectedId={route.id} navigate={navigate} />;
+      return (
+        <TracesView
+          api={api}
+          selectedId={route.id}
+          initialFilters={route.filters}
+          navigate={navigate}
+        />
+      );
     case 'activity':
-      return <ActivityView api={api} />;
+      return <ActivityView api={api} initialTraceId={route.filters?.traceId} />;
     case 'providers':
       return <ProvidersView api={api} status={status} />;
     case 'settings':
@@ -1212,10 +1245,10 @@ function OverviewView({
     onError: (error) => mutationError('Could not turn capture on', error),
   });
   const stats = [
-    ['Captured', status.counts.captured, 'muted'],
-    ['Notarizing', status.counts.notarizing, 'active'],
-    ['Notarized', status.counts.notarized, 'ready'],
-    ['Needs attention', status.counts.needs_attention + status.counts.capture_failed, 'danger'],
+    ['Captured', status.counts.captured, 'muted', { state: 'captured' }],
+    ['Notarizing', status.counts.notarizing, 'active', { status: 'notarizing' }],
+    ['Notarized', status.counts.notarized, 'ready', { state: 'notarized' }],
+    ['Needs attention', status.counts.needs_attention, 'danger', { status: 'needs_attention' }],
   ] as const;
   return (
     <div className="view-page overview-page">
@@ -1258,8 +1291,8 @@ function OverviewView({
         <div>
           <Text className="eyebrow">Trace states</Text>
           <div className="count-strip">
-            {stats.map(([label, value, tone]) => (
-              <UnstyledButton key={label} onClick={() => navigate({ view: 'traces' })}>
+            {stats.map(([label, value, tone, filters]) => (
+              <UnstyledButton key={label} onClick={() => navigate({ view: 'traces', filters })}>
                 <span className={`count-marker count-marker--${tone}`} />
                 <b>{value}</b>
                 <span>{label}</span>
@@ -1350,19 +1383,26 @@ function ServiceFact({
 function TracesView({
   api,
   selectedId,
+  initialFilters,
   navigate,
 }: {
   api: LocalApi;
   selectedId?: string;
+  initialFilters?: Route['filters'];
   navigate: (route: Route) => void;
 }) {
   const [query, setQuery] = useState('');
   const [model, setModel] = useState('');
   const [provider, setProvider] = useState<string | null>(null);
-  const [traceState, setTraceState] = useState<TraceStateFilter | null>(null);
-  const [operationalStatus, setOperationalStatus] = useState<TraceStatusFilter | null>(null);
+  const [traceState, setTraceState] = useState<TraceStateFilter | null>(
+    (initialFilters?.state as TraceStateFilter | undefined) ?? null,
+  );
+  const [operationalStatus, setOperationalStatus] = useState<TraceStatusFilter | null>(
+    (initialFilters?.status as TraceStatusFilter | undefined) ?? null,
+  );
   const [streaming, setStreaming] = useState<string | null>(null);
   const [time, setTime] = useState<string | null>(null);
+  const [moreOpen, setMoreOpen] = useState(Boolean(initialFilters?.status));
   const mobile = useMediaQuery('(max-width: 820px)');
   const createdAfter = useMemo(() => timeRangeStart(time), [time]);
   const traces = useInfiniteQuery({
@@ -1390,6 +1430,7 @@ function TracesView({
       }),
     initialPageParam: undefined as string | undefined,
     getNextPageParam: (page) => page.next_cursor ?? undefined,
+    refetchInterval: 3_000,
   });
   const selectedDetail = useQuery({
     queryKey: ['capture', selectedId],
@@ -1403,74 +1444,108 @@ function TracesView({
   const activeId = selectedId ?? visible[0]?.trace_id;
   const active = visible.find((capture) => capture.trace_id === activeId) ?? selectedDetail.data;
   const showDetail = Boolean(mobile && selectedId);
+  const hasAdditionalFilters = Boolean(
+    query || model || provider || operationalStatus || streaming || time,
+  );
+  const emptyCopy = hasAdditionalFilters
+    ? 'No traces match these filters.'
+    : traceState === 'captured'
+      ? 'No traces are currently in the Captured state.'
+      : traceState === 'notarized'
+        ? 'No traces have been notarized yet.'
+        : 'No traces have been captured yet.';
   return (
     <div className="view-page capture-page">
       {!showDetail && (
-        <div className="filter-bar filter-bar--captures">
-          <TextInput
-            aria-label="Search traces"
-            placeholder="Search prompt and output previews"
-            leftSection={<Search size={15} />}
-            value={query}
-            onChange={(event) => setQuery(event.currentTarget.value)}
-          />
-          <TextInput
-            aria-label="Model filter"
-            placeholder="All models"
-            value={model}
-            onChange={(event) => setModel(event.currentTarget.value)}
-          />
-          <AxisSelect
-            ariaLabel="Provider filter"
-            placeholder="All providers"
-            data={['openai', 'anthropic', 'deepseek', 'openrouter'].map((value) => ({
-              value,
-              label: <ProviderIdentity provider={value} />,
-            }))}
-            value={provider}
-            onChange={setProvider}
-          />
-          <AxisSelect
-            ariaLabel="Trace state filter"
-            placeholder="All trace states"
-            data={['captured', 'notarized']}
-            value={traceState}
-            onChange={(value) => setTraceState(value as TraceStateFilter | null)}
-          />
-          <AxisSelect
-            ariaLabel="Operational status filter"
-            placeholder="All operational statuses"
-            data={[
-              'capturing',
-              'capture_failed',
-              'notarizing',
-              'notarization_failed',
-              'notarization_interrupted',
-            ]}
-            value={operationalStatus}
-            onChange={(value) => setOperationalStatus(value as TraceStatusFilter | null)}
-          />
-          <AxisSelect
-            ariaLabel="Streaming filter"
-            placeholder="Streaming or buffered"
-            data={[
-              { value: 'streaming', label: 'Streaming' },
-              { value: 'buffered', label: 'Buffered' },
-            ]}
-            value={streaming}
-            onChange={setStreaming}
-          />
-          <AxisSelect
-            ariaLabel="Trace time filter"
-            placeholder="Any time"
-            data={[
-              { value: 'hour', label: 'Last hour' },
-              { value: 'day', label: 'Last 24 hours' },
-              { value: 'week', label: 'Last 7 days' },
-            ]}
-            value={time}
-            onChange={setTime}
-          />
+        <div className="trace-filters">
+          <div className="trace-filter-primary">
+            <TextInput
+              aria-label="Search traces"
+              placeholder="Search traces"
+              leftSection={<Search size={15} />}
+              value={query}
+              onChange={(event) => setQuery(event.currentTarget.value)}
+            />
+            <div className="trace-state-filter" role="group" aria-label="Trace state filter">
+              {[
+                [null, 'All'],
+                ['captured', 'Captured'],
+                ['notarized', 'Notarized'],
+              ].map(([value, label]) => (
+                <button
+                  key={label}
+                  type="button"
+                  className={traceState === value ? 'is-active' : ''}
+                  aria-pressed={traceState === value}
+                  onClick={() => setTraceState(value as TraceStateFilter | null)}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+            <AxisSelect
+              ariaLabel="Provider filter"
+              placeholder="All providers"
+              data={['openai', 'anthropic', 'deepseek', 'openrouter'].map((value) => ({
+                value,
+                label: <ProviderIdentity provider={value} />,
+              }))}
+              value={provider}
+              onChange={setProvider}
+            />
+            <AxisSelect
+              ariaLabel="Trace time filter"
+              placeholder="Any date"
+              data={[
+                { value: 'hour', label: 'Last hour' },
+                { value: 'day', label: 'Last 24 hours' },
+                { value: 'week', label: 'Last 7 days' },
+              ]}
+              value={time}
+              onChange={setTime}
+            />
+            <Button
+              variant={moreOpen || operationalStatus || model || streaming ? 'light' : 'default'}
+              onClick={() => setMoreOpen((open) => !open)}
+              aria-expanded={moreOpen}
+            >
+              More filters
+            </Button>
+          </div>
+          {moreOpen && (
+            <div className="trace-filter-more">
+              <TextInput
+                aria-label="Model filter"
+                placeholder="All models"
+                value={model}
+                onChange={(event) => setModel(event.currentTarget.value)}
+              />
+              <AxisSelect
+                ariaLabel="Operational status filter"
+                placeholder="All operational statuses"
+                data={[
+                  { value: 'needs_attention', label: 'Needs attention' },
+                  'capturing',
+                  'capture_failed',
+                  'notarizing',
+                  'notarization_failed',
+                  'notarization_interrupted',
+                ]}
+                value={operationalStatus}
+                onChange={(value) => setOperationalStatus(value as TraceStatusFilter | null)}
+              />
+              <AxisSelect
+                ariaLabel="Streaming filter"
+                placeholder="Streaming or buffered"
+                data={[
+                  { value: 'streaming', label: 'Streaming' },
+                  { value: 'buffered', label: 'Buffered' },
+                ]}
+                value={streaming}
+                onChange={setStreaming}
+              />
+            </div>
+          )}
         </div>
       )}
       {traces.isLoading || (selectedId && selectedDetail.isLoading) ? (
@@ -1480,10 +1555,7 @@ function TracesView({
       ) : selectedDetail.error ? (
         <QueryError error={selectedDetail.error} title="Trace detail is unavailable" />
       ) : !visible.length && !active ? (
-        <EmptyState
-          title="No traces match"
-          copy="Clear a filter or send a new request through the provider proxy."
-        />
+        <EmptyState title={emptyCopy} copy="Send a request through a configured provider route." />
       ) : (
         <ResizableSplit className={`master-detail ${showDetail ? 'show-detail' : ''}`}>
           {!showDetail ? (
@@ -1515,22 +1587,13 @@ function TracesView({
           )}
           <div className="detail-panel">
             {active ? (
-              notarizationStatus(active) === 'succeeded' ? (
-                <TraceInspector
-                  api={api}
-                  captureId={active.trace_id}
-                  mobile={Boolean(mobile)}
-                  onBack={() => navigate({ view: 'traces' })}
-                />
-              ) : (
-                <CaptureInspector
-                  api={api}
-                  capture={active}
-                  mobile={Boolean(mobile)}
-                  onBack={() => navigate({ view: 'traces' })}
-                  navigate={navigate}
-                />
-              )
+              <TraceInspector
+                api={api}
+                capture={active}
+                mobile={Boolean(mobile)}
+                onBack={() => navigate({ view: 'traces' })}
+                navigate={navigate}
+              />
             ) : null}
           </div>
         </ResizableSplit>
@@ -1551,12 +1614,19 @@ function CaptureRow({
   return (
     <UnstyledButton className={`capture-row ${active ? 'is-active' : ''}`} onClick={onClick}>
       <span className="capture-row-state">
-        <StatusLabel state={traceDisplayStatus(capture)} />
+        <span
+          className={`trace-lifecycle-label trace-lifecycle-label--${stateTone(traceDisplayStatus(capture))}`}
+        >
+          {traceLifecycleLabel(capture)}
+        </span>
       </span>
       <span className="capture-row-copy">
-        <b>{capture.requested_model ?? 'Model not reported'}</b>
+        <b>{traceTitle(capture)}</b>
         <small>
-          <ProviderIdentity provider={capture.provider} detail={capture.operation} />
+          <ProviderIdentity
+            provider={capture.provider}
+            detail={capture.requested_model ?? 'Model not reported'}
+          />
         </small>
       </span>
       <time className="mono-time">{formatDate(capture.created_at_unix_ms)}</time>
@@ -1564,7 +1634,27 @@ function CaptureRow({
   );
 }
 
-function CaptureInspector({
+function TraceInspector(props: {
+  api: LocalApi;
+  capture: TraceSummary;
+  mobile: boolean;
+  onBack: () => void;
+  navigate: (route: Route) => void;
+}) {
+  return props.capture.state === 'notarized' ? (
+    <NotarizedTraceInspector
+      api={props.api}
+      capture={props.capture}
+      mobile={props.mobile}
+      onBack={props.onBack}
+      navigate={props.navigate}
+    />
+  ) : (
+    <CapturedTraceInspector {...props} />
+  );
+}
+
+function CapturedTraceInspector({
   api,
   capture,
   mobile,
@@ -1581,6 +1671,7 @@ function CaptureInspector({
   const detail = useQuery({
     queryKey: ['capture', capture.trace_id],
     queryFn: () => api.trace(capture.trace_id),
+    refetchInterval: 2_000,
   });
   const notarize = useMutation({
     mutationFn: () => api.startNotarization(capture.trace_id),
@@ -1612,6 +1703,7 @@ function CaptureInspector({
     captureStatus(capture) === 'captured' &&
     notarizationStatus(capture) === 'not_requested' &&
     capture.notarization_eligible;
+  const canRetry = Boolean(value.notarization?.retryable);
   return (
     <article className="inspector capture-inspector">
       {mobile && (
@@ -1619,25 +1711,52 @@ function CaptureInspector({
           All traces
         </Button>
       )}
-      <div className="inspector-head">
+      <div className="inspector-head trace-inspector-head">
         <div>
-          <Text className="eyebrow">Trace detail</Text>
-          <Title order={2}>{capture.requested_model ?? 'Unreported model'}</Title>
-          <Text className="mono-id">{capture.trace_id}</Text>
+          <Text className="eyebrow">Trace</Text>
+          <Title order={2}>{traceTitle(capture)}</Title>
+          <Group gap="xs" className="trace-head-facts">
+            <span className="trace-lifecycle-label">{traceLifecycleLabel(capture)}</span>
+            <ProviderIdentity
+              provider={capture.provider}
+              detail={capture.requested_model ?? 'Model not reported'}
+            />
+            <time>{formatDate(capture.created_at_unix_ms)}</time>
+          </Group>
+          <Group gap={4} className="trace-id-row">
+            <Text className="mono-id">Trace ID · {capture.trace_id}</Text>
+            <ActionIcon
+              variant="subtle"
+              aria-label="Copy Trace ID"
+              onClick={() => void navigator.clipboard.writeText(capture.trace_id)}
+            >
+              <Copy size={13} />
+            </ActionIcon>
+          </Group>
         </div>
         <Group>
-          {canNotarize && (
+          {(canNotarize || canRetry) && (
             <Button
               loading={notarize.isPending}
-              leftSection={<Play size={15} />}
+              leftSection={canRetry ? <RefreshCw size={15} /> : <Play size={15} />}
               onClick={() => notarize.mutate()}
             >
-              Notarize
+              {canRetry ? 'Retry notarization' : 'Notarize'}
             </Button>
           )}
         </Group>
       </div>
-      <Lifecycle capture={capture} />
+      {capture.status === 'capture_failed' && (
+        <div className="notarization-ineligible-note" role="status">
+          <XCircle size={18} aria-hidden="true" />
+          <div>
+            <b>The original request cannot be replayed</b>
+            <Text>
+              Capture did not complete, so this Trace has no private evidence to notarize.
+            </Text>
+          </div>
+        </div>
+      )}
       {incompatibleProviderResponse && (
         <div className="notarization-ineligible-note" role="status">
           <XCircle size={18} aria-hidden="true" />
@@ -1651,77 +1770,67 @@ function CaptureInspector({
           </div>
         </div>
       )}
-      <InspectorSection title="Safe metadata">
-        <dl className="metadata-grid">
-          <Fact label="Provider" value={<ProviderIdentity provider={capture.provider} />} />
-          <Fact label="Operation" value={capture.operation} />
-          <Fact label="HTTP status" value={capture.http_status?.toString() ?? 'In progress'} />
-          <Fact label="Streaming" value={capture.streaming ? 'Yes' : 'No'} />
-          <Fact label="Request" value={formatBytes(capture.request_bytes)} />
-          <Fact label="Response" value={formatBytes(capture.response_bytes)} />
-        </dl>
-      </InspectorSection>
-      <InspectorSection title="Privacy-aware previews">
-        <div className="preview-block">
-          <Text className="eyebrow">
-            Prompt {capture.prompt_preview_truncated && '· truncated'}
-          </Text>
-          <Text>{capture.prompt_preview || 'Preview storage is disabled.'}</Text>
-        </div>
-        <div className="preview-block">
-          <Text className="eyebrow">
-            Output {capture.output_preview_truncated && '· truncated'}
-          </Text>
-          <Text>{capture.output_preview || 'No output preview is available yet.'}</Text>
-        </div>
-      </InspectorSection>
-      <InspectorSection title="Retained artifacts">
-        <ArtifactList detail={value} />
-      </InspectorSection>
-      <InspectorSection title="Notarization history">
-        {value.notarization ? (
-          <OperationInspector api={api} operation={value.notarization} fixture={false} />
-        ) : (
-          <Text className="empty-copy">No notarization has been requested for this capture.</Text>
-        )}
-      </InspectorSection>
+      <Tabs defaultValue="summary" keepMounted={false}>
+        <Tabs.List>
+          <Tabs.Tab value="summary">Summary</Tabs.Tab>
+          <Tabs.Tab value="notarization">Notarization</Tabs.Tab>
+        </Tabs.List>
+        <Tabs.Panel value="summary">
+          <InspectorSection title="Private on this device">
+            <div className="preview-block private-preview-label">
+              <Text>
+                These previews come from private local retention, not from a portable package.
+              </Text>
+            </div>
+            <div className="preview-block">
+              <Text className="eyebrow">
+                Prompt {capture.prompt_preview_truncated && '· truncated'}
+              </Text>
+              <Text>{capture.prompt_preview || 'Preview storage is disabled.'}</Text>
+            </div>
+            <div className="preview-block">
+              <Text className="eyebrow">
+                Output {capture.output_preview_truncated && '· truncated'}
+              </Text>
+              <Text>{capture.output_preview || 'No output preview is available yet.'}</Text>
+            </div>
+          </InspectorSection>
+          <InspectorSection title="Trace facts">
+            <dl className="metadata-grid">
+              <Fact label="Provider" value={<ProviderIdentity provider={capture.provider} />} />
+              <Fact label="Operation" value={capture.operation} />
+              <Fact label="HTTP status" value={capture.http_status?.toString() ?? 'In progress'} />
+              <Fact label="Streaming" value={capture.streaming ? 'Yes' : 'No'} />
+              <Fact label="Request" value={formatBytes(capture.request_bytes)} />
+              <Fact label="Response" value={formatBytes(capture.response_bytes)} />
+            </dl>
+          </InspectorSection>
+          <InspectorSection title="Retained artifacts">
+            <ArtifactList detail={value} />
+          </InspectorSection>
+        </Tabs.Panel>
+        <Tabs.Panel value="notarization">
+          <InspectorSection title="Notarization">
+            {!capture.notarization_eligible && capture.notarization_ineligibility_code && (
+              <Text className="empty-copy">
+                Cannot be notarized · {capture.notarization_ineligibility_code}
+              </Text>
+            )}
+            {value.notarization ? (
+              <OperationInspector
+                operation={value.notarization}
+                fixture={false}
+                onViewActivity={() =>
+                  navigate({ view: 'activity', filters: { traceId: capture.trace_id } })
+                }
+              />
+            ) : (
+              <Text className="empty-copy">No notarization has been requested for this Trace.</Text>
+            )}
+          </InspectorSection>
+        </Tabs.Panel>
+      </Tabs>
     </article>
-  );
-}
-
-function Lifecycle({ capture }: { capture: TraceSummary }) {
-  const steps = [
-    { label: 'Captured', state: captureStatus(capture) === 'capturing' ? 'active' : 'ready' },
-    {
-      label: 'Capture checkpoint encrypted',
-      state:
-        captureStatus(capture) === 'captured'
-          ? 'ready'
-          : captureStatus(capture) === 'failed'
-            ? 'danger'
-            : 'muted',
-    },
-    {
-      label: 'Notarized',
-      state:
-        notarizationStatus(capture) === 'succeeded'
-          ? 'ready'
-          : ['running', 'queued'].includes(notarizationStatus(capture))
-            ? 'active'
-            : notarizationStatus(capture) === 'failed'
-              ? 'danger'
-              : 'muted',
-    },
-  ];
-  return (
-    <ol className="lifecycle" aria-label="Trace lifecycle">
-      {steps.map((step) => (
-        <li key={step.label} className={`lifecycle--${step.state}`}>
-          <span aria-hidden="true" />
-          <b>{step.label}</b>
-        </li>
-      ))}
-    </ol>
   );
 }
 
@@ -1808,35 +1917,17 @@ function ProofProgress({ operation }: { operation: Operation }) {
 }
 
 function OperationInspector({
-  api,
   operation,
   fixture,
+  onViewActivity,
 }: {
-  api: LocalApi;
   operation: Operation;
   fixture: boolean;
+  onViewActivity?: () => void;
 }) {
-  const queryClient = useQueryClient();
-  const retry = useMutation({
-    mutationFn: () => api.startNotarization(operation.trace_id),
-    onSuccess: (updated) => {
-      notifications.show({
-        title: 'Retry queued',
-        message: 'The same durable operation will make another attempt.',
-      });
-      queryClient.setQueryData(['operation', operation.operation_id], updated.operation);
-      queryClient.invalidateQueries({ queryKey: ['operations'] });
-      queryClient.invalidateQueries({ queryKey: ['traces'] });
-      queryClient.invalidateQueries({ queryKey: ['capture', operation.trace_id] });
-      queryClient.invalidateQueries({ queryKey: ['status'] });
-      queryClient.invalidateQueries({ queryKey: ['events'] });
-    },
-    onError: (error) => mutationError('Could not retry notarization', error),
-  });
-  const retryable = operation.retryable;
   return (
     <Paper className="operation-inspector">
-      <Text className="eyebrow">Selected operation</Text>
+      <Text className="eyebrow">Notarization attempt</Text>
       <Group justify="space-between" align="flex-start">
         <div>
           <Title order={2}>
@@ -1861,7 +1952,7 @@ function OperationInspector({
       )}
       <ProofProgress operation={operation} />
       <dl className="receipt-list">
-        <Fact label="Trace" value={operation.trace_id ?? '—'} />
+        <Fact label="Trace ID" value={operation.trace_id ?? '—'} />
         <Fact label="Attempt" value={String(operation.attempt)} />
         <Fact label="Started" value={formatDate(operation.started_at_unix_ms)} />
         <Fact label="Finished" value={formatDate(operation.completed_at_unix_ms)} />
@@ -1893,52 +1984,56 @@ function OperationInspector({
           <Text className="empty-copy">No proof attempt has started yet.</Text>
         )}
       </div>
-      {retryable && (
-        <Button
-          leftSection={<RefreshCw size={15} />}
-          loading={retry.isPending}
-          onClick={() => retry.mutate()}
-        >
-          Retry notarization
+      {onViewActivity && (
+        <Button variant="subtle" onClick={onViewActivity}>
+          View Trace activity
         </Button>
       )}
     </Paper>
   );
 }
 
-function TraceInspector({
+function NotarizedTraceInspector({
   api,
-  captureId,
+  capture,
   mobile,
   onBack,
+  navigate,
 }: {
   api: LocalApi;
-  captureId: string;
+  capture: TraceSummary;
   mobile: boolean;
   onBack: () => void;
+  navigate: (route: Route) => void;
 }) {
+  const queryClient = useQueryClient();
+  const captureId = capture.trace_id;
   const trace = useQuery({
     queryKey: ['trace', captureId],
     queryFn: () => api.traceContent(captureId),
   });
+  const detail = useQuery({
+    queryKey: ['capture', captureId],
+    queryFn: () => api.trace(captureId),
+  });
   const [verification, setVerification] = useState<Verification | null>(null);
   const [activeTab, setActiveTab] = useState<string | null>('summary');
   const [shareConfirmation, setShareConfirmation] = useState(false);
-  const [shareStarted, setShareStarted] = useState(false);
+  const [shareRequested, setShareRequested] = useState(false);
   const currentCapture = useRef(captureId);
   useEffect(() => {
     currentCapture.current = captureId;
     setVerification(null);
     setActiveTab('summary');
     setShareConfirmation(false);
-    setShareStarted(false);
+    setShareRequested(false);
   }, [captureId]);
   const verify = useMutation({
     mutationFn: () => api.verify(captureId),
     onSuccess: (result) => {
       if (currentCapture.current !== result.trace_id) return;
       setVerification(result);
-      setActiveTab('verification');
+      setActiveTab('evidence');
       notifications.show({
         title: 'Trace verified',
         message: 'The package passed every local verification check.',
@@ -1946,7 +2041,7 @@ function TraceInspector({
     },
     onError: (error) => mutationError('Trace verification failed', error),
   });
-  const download = useMutation({
+  const exportTrace = useMutation({
     mutationFn: () => api.downloadPackage(captureId),
     onSuccess: (packageBytes) => {
       const url = URL.createObjectURL(packageBytes);
@@ -1956,28 +2051,36 @@ function TraceInspector({
       link.click();
       URL.revokeObjectURL(url);
       notifications.show({
-        title: 'Verified package downloaded',
-        message: 'Keep the .llmtrace file to verify or share privately.',
+        title: 'Trace exported',
+        message: 'The portable notarized package was exported without modification.',
       });
     },
-    onError: (error) => mutationError('Could not download verified package', error),
+    onError: (error) => mutationError('Could not export Trace', error),
   });
   const shareStatus = useQuery({
     queryKey: ['share', captureId],
-    queryFn: () => api.shareStatus(captureId),
-    enabled: shareStarted,
+    queryFn: async () => {
+      try {
+        return await api.shareStatus(captureId);
+      } catch (error) {
+        if (error instanceof LocalApiError && error.status === 404) return null;
+        throw error;
+      }
+    },
+    enabled: Boolean(detail.data?.share) || shareRequested,
     retry: false,
     refetchInterval: (query) => {
       const progress = query.state.data?.progress;
-      return progress && ['shared', 'rejected', 'failed'].includes(progress) ? false : 3_000;
+      return !progress || ['shared', 'rejected', 'failed'].includes(progress) ? false : 3_000;
     },
   });
   const createShare = useMutation({
     mutationFn: () => api.share(captureId, 'unlisted'),
-    onSuccess: () => {
+    onSuccess: (share) => {
       setShareConfirmation(false);
-      setShareStarted(true);
-      shareStatus.refetch();
+      setShareRequested(true);
+      queryClient.setQueryData(['share', captureId], share);
+      queryClient.invalidateQueries({ queryKey: ['capture', captureId] });
       notifications.show({
         title: 'Unlisted share started',
         message: 'The disclosed package is being verified before a public URL is created.',
@@ -1988,7 +2091,9 @@ function TraceInspector({
   const stopShare = useMutation({
     mutationFn: () => api.stopSharing(captureId),
     onSuccess: () => {
-      setShareStarted(false);
+      setShareRequested(false);
+      queryClient.setQueryData(['share', captureId], null);
+      queryClient.invalidateQueries({ queryKey: ['capture', captureId] });
       notifications.show({
         title: 'Sharing stopped',
         message: 'The public share is no longer accessible.',
@@ -1996,9 +2101,9 @@ function TraceInspector({
     },
     onError: (error) => mutationError('Could not stop sharing', error),
   });
-  if (trace.isLoading) return <LoadingState />;
+  if (trace.isLoading || detail.isLoading) return <LoadingState />;
   if (trace.error) return <QueryError error={trace.error} title="Trace package is unavailable" />;
-  if (!trace.data)
+  if (!trace.data || !detail.data)
     return <ErrorState title="Trace package is unavailable" onRetry={() => trace.refetch()} />;
   const manifest = asRecord(trace.data.manifest);
   const source = asRecord(manifest.source);
@@ -2009,25 +2114,46 @@ function TraceInspector({
   const traceDigest =
     typeof manifest.trace_sha256 === 'string' ? manifest.trace_sha256 : 'Not reported';
   const transcripts = traceTranscripts(trace.data.trace);
+  const activeShare = shareStatus.isSuccess
+    ? shareStatus.data
+    : (shareStatus.data ?? detail.data.share);
   return (
     <article className="trace-inspector">
       {mobile && (
         <Button variant="subtle" leftSection={<ArrowLeft size={15} />} onClick={onBack}>
-          All notarized traces
+          All traces
         </Button>
       )}
-      <Group justify="space-between" align="flex-start">
+      <Group justify="space-between" align="flex-start" className="trace-inspector-head">
         <div>
-          <Text className="eyebrow">Verified trace package</Text>
-          <Title order={2}>{captureId}</Title>
+          <Text className="eyebrow">Trace</Text>
+          <Title order={2}>{traceTitle(capture)}</Title>
+          <Group gap="xs" className="trace-head-facts">
+            <span className="trace-lifecycle-label">Notarized</span>
+            <ProviderIdentity
+              provider={capture.provider}
+              detail={capture.requested_model ?? 'Model not reported'}
+            />
+            <time>{formatDate(capture.created_at_unix_ms)}</time>
+          </Group>
+          <Group gap={4} className="trace-id-row">
+            <Text className="mono-id">Trace ID · {captureId}</Text>
+            <ActionIcon
+              variant="subtle"
+              aria-label="Copy Trace ID"
+              onClick={() => void navigator.clipboard.writeText(captureId)}
+            >
+              <Copy size={13} />
+            </ActionIcon>
+          </Group>
         </div>
         <Group>
           <Button
             leftSection={<Download size={15} />}
-            loading={download.isPending}
-            onClick={() => download.mutate()}
+            loading={exportTrace.isPending}
+            onClick={() => exportTrace.mutate()}
           >
-            Download verified package
+            {exportTrace.isPending ? 'Exporting…' : 'Export .llmtrace'}
           </Button>
           <Button
             variant="outline"
@@ -2037,35 +2163,51 @@ function TraceInspector({
           >
             Verify locally
           </Button>
-          <Button
-            variant="outline"
-            leftSection={<Send size={15} />}
-            onClick={() => setShareConfirmation(true)}
-          >
-            Share
-          </Button>
+          {!activeShare && (
+            <Button
+              variant="outline"
+              leftSection={<Send size={15} />}
+              onClick={() => setShareConfirmation(true)}
+            >
+              Share
+            </Button>
+          )}
         </Group>
       </Group>
-      {shareStarted && (
+      {activeShare && (
         <Paper className="trace-share-status">
           <div>
-            <Text className="eyebrow">Unlisted share</Text>
-            <Text>
-              {shareStatus.data?.progress === 'shared'
-                ? 'Anyone with this URL can read the disclosed Trace.'
-                : `Status · ${shareStatus.data?.progress ?? 'checking'}`}
+            <Text className="eyebrow">
+              {activeShare.visibility === 'listed' ? 'Listed share' : 'Unlisted share'}
             </Text>
+            <Text>
+              {!activeShare.access_enabled
+                ? 'Public access is disabled for this share.'
+                : activeShare.progress === 'shared'
+                  ? activeShare.visibility === 'listed'
+                    ? 'This disclosed Trace is publicly listed and readable.'
+                    : 'Anyone with this URL can read the disclosed Trace.'
+                  : `Status · ${activeShare.progress}`}
+            </Text>
+            {shareStatus.error && (
+              <Text role="status">
+                Could not refresh share status. Showing the last known state.
+              </Text>
+            )}
           </div>
           <Group>
-            {shareStatus.data?.share_url && (
+            {activeShare.access_enabled && activeShare.share_url && (
               <Button
                 variant="outline"
                 leftSection={<Copy size={15} />}
-                onClick={() =>
-                  void navigator.clipboard.writeText(shareStatus.data?.share_url ?? '')
-                }
+                onClick={() => void navigator.clipboard.writeText(activeShare.share_url ?? '')}
               >
                 Copy URL
+              </Button>
+            )}
+            {shareStatus.error && (
+              <Button variant="outline" onClick={() => shareStatus.refetch()}>
+                Retry status
               </Button>
             )}
             <Button
@@ -2083,19 +2225,98 @@ function TraceInspector({
       <Tabs value={activeTab} onChange={setActiveTab} keepMounted={false}>
         <Tabs.List>
           <Tabs.Tab value="summary">Summary</Tabs.Tab>
+          <Tabs.Tab value="notarization">Notarization</Tabs.Tab>
           <Tabs.Tab value="evidence">Evidence</Tabs.Tab>
-          <Tabs.Tab value="trace">Trace</Tabs.Tab>
-          <Tabs.Tab value="verification">Verification</Tabs.Tab>
+          <Tabs.Tab value="technical">Technical</Tabs.Tab>
         </Tabs.List>
         <Tabs.Panel value="summary">
           <div className="document-panel">
-            <Title order={3}>Authenticated inference</Title>
+            <Text className="eyebrow">Private on this device</Text>
+            <Title order={3}>Prompt and response preview</Title>
             <Text>
-              The package contains the disclosed provider exchange, its canonical OpenTelemetry
-              trace, and the supporting TLSNotary evidence.
+              These previews come from private local retention and are separate from the package's
+              disclosed conversation.
             </Text>
+            <div className="preview-block">
+              <Text className="eyebrow">Prompt</Text>
+              <Text>{capture.prompt_preview || 'Preview storage is disabled.'}</Text>
+            </div>
+            <div className="preview-block">
+              <Text className="eyebrow">Output</Text>
+              <Text>{capture.output_preview || 'Preview storage is disabled.'}</Text>
+            </div>
             <dl className="metadata-grid">
-              <Fact label="Trace" value={captureId} />
+              <Fact label="Provider" value={<ProviderIdentity provider={capture.provider} />} />
+              <Fact label="Operation" value={capture.operation} />
+              <Fact label="HTTP status" value={capture.http_status?.toString() ?? 'Not reported'} />
+              <Fact label="Streaming" value={capture.streaming ? 'Yes' : 'No'} />
+              <Fact label="Request" value={formatBytes(capture.request_bytes)} />
+              <Fact label="Response" value={formatBytes(capture.response_bytes)} />
+            </dl>
+          </div>
+        </Tabs.Panel>
+        <Tabs.Panel value="notarization">
+          <div className="document-panel">
+            <Title order={3}>Notarization</Title>
+            {detail.data.notarization ? (
+              <OperationInspector
+                operation={detail.data.notarization}
+                fixture={false}
+                onViewActivity={() =>
+                  navigate({ view: 'activity', filters: { traceId: captureId } })
+                }
+              />
+            ) : (
+              <Text className="empty-copy">No notarization history is available.</Text>
+            )}
+          </div>
+        </Tabs.Panel>
+        <Tabs.Panel value="evidence">
+          <div className="document-panel">
+            <Text className="eyebrow">Portable package disclosure</Text>
+            <Title order={3}>Disclosed conversation</Title>
+            <TraceTranscriptView transcripts={transcripts} />
+            <Receipt
+              title="Evidence receipt"
+              fields={[
+                ['Trace SHA-256', traceDigest],
+                ['Provider', providerLabel],
+                [
+                  'Source created',
+                  typeof source.created_at_unix_ms === 'number'
+                    ? formatDate(source.created_at_unix_ms)
+                    : 'Not reported',
+                ],
+                [
+                  'Manifest format',
+                  typeof manifest.format === 'string' ? manifest.format : 'Not reported',
+                ],
+              ]}
+            />
+            {verification ? (
+              <Receipt
+                title="Verification passed"
+                verified
+                fields={[
+                  ['Trace', verification.trace_id ?? 'Not reported'],
+                  ['Verified at', formatDate(verification.verified_at_unix_ms)],
+                  ['Notary key', verification.notary_key_id ?? 'Not reported'],
+                  ['Trust source', verification.trust_source ?? 'Not reported'],
+                ]}
+              />
+            ) : (
+              <EmptyState
+                icon={ShieldCheck}
+                title="Run an independent check"
+                copy="Verification replays the provider adapter and checks every authenticated artifact."
+              />
+            )}
+          </div>
+        </Tabs.Panel>
+        <Tabs.Panel value="technical">
+          <div className="document-panel">
+            <Title order={3}>Package and OpenTelemetry details</Title>
+            <dl className="metadata-grid">
               <Fact
                 label="Format"
                 value={typeof manifest.format === 'string' ? manifest.format : 'Not reported'}
@@ -2118,51 +2339,10 @@ function TraceInspector({
                   />
                 }
               />
+              <Fact label="Trace SHA-256" value={traceDigest} />
             </dl>
-            <TraceTranscriptView transcripts={transcripts} />
+            <pre className="json-view">{JSON.stringify(trace.data.trace, null, 2)}</pre>
           </div>
-        </Tabs.Panel>
-        <Tabs.Panel value="evidence">
-          <Receipt
-            title="Evidence receipt"
-            fields={[
-              ['Trace SHA-256', traceDigest],
-              ['Provider', providerLabel],
-              [
-                'Source created',
-                typeof source.created_at_unix_ms === 'number'
-                  ? formatDate(source.created_at_unix_ms)
-                  : 'Not reported',
-              ],
-              [
-                'Manifest format',
-                typeof manifest.format === 'string' ? manifest.format : 'Not reported',
-              ],
-            ]}
-          />
-        </Tabs.Panel>
-        <Tabs.Panel value="trace">
-          <pre className="json-view">{JSON.stringify(trace.data.trace, null, 2)}</pre>
-        </Tabs.Panel>
-        <Tabs.Panel value="verification">
-          {verification ? (
-            <Receipt
-              title="Verification passed"
-              verified
-              fields={[
-                ['Trace', verification.trace_id ?? 'Not reported'],
-                ['Verified at', formatDate(verification.verified_at_unix_ms)],
-                ['Notary key', verification.notary_key_id ?? 'Not reported'],
-                ['Trust source', verification.trust_source ?? 'Not reported'],
-              ]}
-            />
-          ) : (
-            <EmptyState
-              icon={ShieldCheck}
-              title="Run an independent check"
-              copy="Verification replays the provider adapter and checks every authenticated artifact."
-            />
-          )}
         </Tabs.Panel>
       </Tabs>
       <AlertDialog open={shareConfirmation} onOpenChange={setShareConfirmation}>
@@ -2285,9 +2465,9 @@ function Receipt({
   );
 }
 
-function ActivityView({ api }: { api: LocalApi }) {
+function ActivityView({ api, initialTraceId = '' }: { api: LocalApi; initialTraceId?: string }) {
   const [severity, setSeverity] = useState<string | null>(null);
-  const [captureId, setCaptureId] = useState('');
+  const [captureId, setCaptureId] = useState(initialTraceId);
   const [operationId, setOperationId] = useState('');
   const [eventType, setEventType] = useState('');
   const [time, setTime] = useState<string | null>(null);

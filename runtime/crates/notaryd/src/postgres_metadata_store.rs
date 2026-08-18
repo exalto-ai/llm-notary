@@ -1198,6 +1198,9 @@ impl MetadataStore for PostgresMetadataStore {
         match filters.status.as_deref() {
             Some("capturing") => query.push(" AND c.capture_status = 'capturing'"),
             Some("capture_failed") => query.push(" AND c.capture_status = 'failed'"),
+            Some("needs_attention") => query.push(
+                " AND (c.capture_status = 'failed' OR (c.capture_status = 'captured' AND c.notarization_status IN ('failed', 'interrupted')))",
+            ),
             Some("notarizing") => query.push(
                 " AND c.capture_status = 'captured' AND c.notarization_status IN ('queued', 'running')",
             ),
