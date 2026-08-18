@@ -906,7 +906,7 @@ export function Dashboard({
   checkoutPollBaseDelay = 1_000,
   checkoutPollMaxAttempts = 8,
 }: DashboardProps) {
-  const activeView = isDashboardView(view) ? view : 'overview';
+  const activeView = view === 'shares' ? 'traces' : isDashboardView(view) ? view : 'overview';
   const [sessions, setSessions] = useState<ConnectedDevice[] | null>(null);
   const [sessionCursor, setSessionCursor] = useState<string | null>(null);
   const [loadingMoreSessions, setLoadingMoreSessions] = useState(false);

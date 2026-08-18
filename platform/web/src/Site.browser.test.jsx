@@ -315,7 +315,7 @@ describe('hosted site', () => {
     await expect.element(page.getByText('Provider tokens')).not.toBeInTheDocument();
   });
 
-  test('uses the formal sign-in title and does not alias retired Dashboard routes', async () => {
+  test('uses the formal sign-in title and preserves legacy Dashboard deep links', async () => {
     window.location.hash = '#/signin';
     render(<App loadCurrentUser={async () => null} />);
     await expect.element(page.getByRole('heading', { name: 'Sign in' })).toBeVisible();
@@ -332,11 +332,8 @@ describe('hosted site', () => {
       />,
     );
     await expect
-      .element(page.getByRole('heading', { name: 'Verifiable intelligence' }))
-      .toBeVisible();
-    await expect
       .element(page.getByRole('heading', { name: 'Settings', exact: true }))
-      .not.toBeInTheDocument();
+      .toBeVisible();
   });
 
   test('returns signed-out Account visitors to the requested Account route', async () => {

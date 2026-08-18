@@ -967,7 +967,10 @@ export function App({
   const directShare = window.location.pathname.match(/^\/s\/([^/]+)\/?$/);
   const directTraceId = directShare ? decodeURIComponent(directShare[1]) : null;
   const routePath = path.split('?')[0];
-  const [section, page] = routePath.split('/');
+  const [requestedSection, requestedPage] = routePath.split('/');
+  const section = requestedSection === 'dashboard' ? 'account' : requestedSection;
+  const page =
+    requestedSection === 'dashboard' && requestedPage === 'credits' ? 'usage' : requestedPage;
   const sectionAnchor = new URLSearchParams(path.split('?')[1] || '').get('section');
   const isLibrary = section === 'library' || section === 'traces' || section === 'collections';
   const accountLoading = section === 'account' && authPending;
