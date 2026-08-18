@@ -130,6 +130,7 @@ pub(super) async fn execute(
                         &json!({
                             "visibility": args.visibility.as_str(),
                             "force": args.force,
+                            "reactivate": args.reactivate,
                             "password": password,
                             "expires_in_days": args.expires_in_days,
                         }),

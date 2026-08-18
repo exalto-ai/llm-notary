@@ -517,11 +517,11 @@ const docPages: Record<DocPageKey, DocPage> = {
       },
       {
         heading: 'Choose visibility',
-        body: 'Unlisted is recommended and stays out of public Traces. Listed appears in public Traces. Both start accessible to anyone with the stable link.',
+        body: 'Review the conversation and tool content from the exact `.llmtrace` package, then choose Unlisted or Listed, an optional password, and an optional expiration. Unlisted stays out of public Traces but is not private: anyone with an unprotected, unexpired URL can open it.',
       },
       {
         heading: 'Manage access after admission',
-        body: 'From Account → Traces, you can stop sharing a trace, require a password, or set an expiry of up to 365 days. Protected Listed traces remain discoverable, but their conversation previews are withheld.',
+        body: 'From the originating local Trace or Account → Traces, you can copy or open the canonical link, change Listed or Unlisted visibility, replace or remove a password, change or clear an expiration of up to 365 days, and stop sharing. Protected Listed traces remain discoverable, but their conversation previews are withheld.',
       },
       {
         heading: 'Share one Notarized Trace',

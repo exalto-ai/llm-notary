@@ -710,6 +710,23 @@ export interface paths {
         patch: operations["update_trace_access"];
         trace?: never;
     };
+    "/api/traces/{trace_id}/package.llmtrace": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Download an owned exact verified portable proof package */
+        get: operations["download_owned_trace_package"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/traces/{trace_id}/share": {
         parameters: {
             query?: never;
@@ -936,6 +953,8 @@ export interface components {
             package_size_bytes: number;
             /** @description Optional initial access password. The value is accepted only in this body. */
             password?: string | null;
+            /** @description Explicitly restore public access when this source Trace was stopped. */
+            reactivate?: boolean;
             source_trace_id: string;
             visibility: components["schemas"]["TraceVisibility"];
         };
@@ -1069,6 +1088,7 @@ export interface components {
             allow_high_entropy: boolean;
             /** Format: int64 */
             created_at: number;
+            owner_package_url?: string | null;
             package: components["schemas"]["HostedTracePackage"];
             package_url?: string | null;
             public_url?: string | null;
@@ -1101,6 +1121,8 @@ export interface components {
             url: string;
         };
         HostedTraceUsage: {
+            /** Format: int64 */
+            needs_attention: number;
             /** Format: int64 */
             shared: number;
             /** Format: int64 */
@@ -1198,6 +1220,7 @@ export interface components {
                 allow_high_entropy: boolean;
                 /** Format: int64 */
                 created_at: number;
+                owner_package_url?: string | null;
                 package: components["schemas"]["HostedTracePackage"];
                 package_url?: string | null;
                 public_url?: string | null;
@@ -3483,6 +3506,14 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
             500: {
                 headers: {
                     [name: string]: unknown;
@@ -3618,6 +3649,75 @@ export interface operations {
                 };
             };
             429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    download_owned_trace_package: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                trace_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/vnd.exalto.notary.trace-package+zip": number[];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

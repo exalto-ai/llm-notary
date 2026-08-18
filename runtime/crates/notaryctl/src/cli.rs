@@ -150,6 +150,9 @@ pub(super) struct ShareArgs {
     pub(super) visibility: ShareVisibility,
     #[arg(long)]
     pub(super) force: bool,
+    /// Explicitly restore public access to a previously stopped share.
+    #[arg(long)]
+    pub(super) reactivate: bool,
     #[arg(long, value_name = "PATH", conflicts_with = "remove_password")]
     pub(super) password_file: Option<PathBuf>,
     #[arg(long, conflicts_with = "password_file")]

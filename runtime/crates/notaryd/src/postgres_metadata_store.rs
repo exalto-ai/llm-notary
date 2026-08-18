@@ -34,10 +34,18 @@ use crate::{
 const SCHEMA: &str = "notaryd";
 const JOURNAL: &str = "notaryd.schema_migrations";
 const MIGRATION_LOCK_NAMESPACE: &str = "notary/notaryd-postgres-migrations/v1";
-const LATEST_SCHEMA_VERSION: i64 = 1;
+const LATEST_SCHEMA_VERSION: i64 = 2;
 const INITIAL_MIGRATION: &str = include_str!("../migrations-postgres-daemon/0001_initial.sql");
-const MIGRATIONS: [(i64, &str, &str); 1] =
-    [(1, "initial notaryd metadata schema", INITIAL_MIGRATION)];
+const TRACE_SHARE_STOPPED_MIGRATION: &str =
+    include_str!("../migrations-postgres-daemon/0002_trace_share_stopped.sql");
+const MIGRATIONS: [(i64, &str, &str); 2] = [
+    (1, "initial notaryd metadata schema", INITIAL_MIGRATION),
+    (
+        2,
+        "replace legacy Trace share progress states",
+        TRACE_SHARE_STOPPED_MIGRATION,
+    ),
+];
 
 /// A pooled PostgreSQL metadata backend whose schema has already been migrated.
 #[derive(Clone)]
@@ -3368,8 +3376,8 @@ mod tests {
     };
 
     use super::{
-        INITIAL_MIGRATION, JOURNAL, MIGRATION_LOCK_NAMESPACE, PostgresMetadataStore,
-        configure_cluster_compatibility, migrate_database,
+        INITIAL_MIGRATION, JOURNAL, LATEST_SCHEMA_VERSION, MIGRATION_LOCK_NAMESPACE,
+        PostgresMetadataStore, configure_cluster_compatibility, migrate_database,
     };
 
     struct TestPostgres {
@@ -4038,6 +4046,25 @@ mod tests {
         .execute(&mut legacy)
         .await
         .unwrap();
+        sqlx::raw_sql(
+            "INSERT INTO notaryd.traces (
+                trace_id, created_at_unix_ms, provider, operation, streaming,
+                request_bytes, prompt_preview, prompt_preview_truncated,
+                config_fingerprint, capture_status, notarization_status
+             ) VALUES (
+                'trc-upgrade', 1, 'test', 'chat', FALSE,
+                1, '', FALSE, 'fingerprint', 'captured', 'succeeded'
+             );
+             INSERT INTO notaryd.trace_shares (
+                trace_id, hosted_trace_id, progress, visibility, access_enabled,
+                password_protected, updated_at_unix_ms
+             ) VALUES (
+                'trc-upgrade', 'trc-hosted', 'uploading', 'unlisted', FALSE, FALSE, 1
+             );",
+        )
+        .execute(&mut legacy)
+        .await
+        .unwrap();
         drop(legacy);
         migrate_database(
             &legacy_url,
@@ -4047,6 +4074,29 @@ mod tests {
         )
         .await
         .unwrap();
+        let legacy_pool = PgPoolOptions::new().connect(&legacy_url).await.unwrap();
+        assert_eq!(
+            sqlx::query_scalar::<_, String>(
+                "SELECT progress FROM notaryd.trace_shares WHERE trace_id = 'trc-upgrade'",
+            )
+            .fetch_one(&legacy_pool)
+            .await
+            .unwrap(),
+            "verifying"
+        );
+        sqlx::query(
+            "UPDATE notaryd.trace_shares SET progress = 'stopped' WHERE trace_id = 'trc-upgrade'",
+        )
+        .execute(&legacy_pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(&format!("SELECT COUNT(*) FROM {JOURNAL}"))
+                .fetch_one(&legacy_pool)
+                .await
+                .unwrap(),
+            LATEST_SCHEMA_VERSION
+        );
         sqlx::query("CREATE ROLE daemon_runtime LOGIN PASSWORD 'runtime-test-password'")
             .execute(&server.admin)
             .await

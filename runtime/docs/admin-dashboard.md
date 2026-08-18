@@ -56,8 +56,18 @@ for notarization.
 
 For a notarized trace, the same route opens the disclosed prompt and response,
 the evidence receipt, canonical OpenTelemetry trace, local verification, and
-the exact `.llmtrace` package download. The source `.llmcapture` is
+the exact `.llmtrace` package export. The source `.llmcapture` is
 vault-encrypted retry state and is never a shareable package.
+
+Share is a secondary action in this inspector. It first reviews the exact
+package disclosure, publishing account, visibility, optional password, and
+optional expiration. A disconnected user completes account approval without
+leaving the Trace or uploading evidence merely by connecting. Share progress,
+safe failure codes, link actions, access management, retry, and stop controls
+remain inline. Stopping public access never deletes the local Trace or changes
+its Notarized state. Expiration remains distinct from an explicit stop, so an
+expired share can receive a new expiry through **Manage access** without a
+misleading resume step.
 
 ![Notarized Trace inspector in dark mode showing a passed local verification receipt with trace identity, verification time, notary key, and trust source.](images/admin-dashboard/trace-verification.png)
 

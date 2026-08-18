@@ -49,6 +49,7 @@ struct CreateHostedTrace<'a> {
     password: Option<&'a str>,
     expires_in_days: Option<u32>,
     allow_high_entropy: bool,
+    reactivate: bool,
 }
 
 #[derive(Deserialize)]
@@ -108,6 +109,54 @@ struct ApiErrorResponse {
     error: String,
 }
 
+#[derive(Debug, thiserror::Error)]
+#[error("{action} failed with HTTP {status}: {code}")]
+pub(crate) struct HostedApiError {
+    action: &'static str,
+    status: StatusCode,
+    code: String,
+}
+
+impl HostedApiError {
+    pub(crate) fn classified(&self) -> Option<HostedShareError> {
+        HostedShareError::classify(self.status, &self.code)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum HostedShareError {
+    BillingReview,
+    PasswordCapacity,
+    PasswordRateLimited,
+    ReactivationExpiryRequired,
+    ReactivationRequired,
+    StorageQuotaExceeded,
+}
+
+impl HostedShareError {
+    fn classify(status: StatusCode, code: &str) -> Option<Self> {
+        match (status, code) {
+            (StatusCode::PAYMENT_REQUIRED, "billing_review") => Some(Self::BillingReview),
+            (StatusCode::PAYMENT_REQUIRED, "trace_storage_quota_exceeded") => {
+                Some(Self::StorageQuotaExceeded)
+            }
+            (StatusCode::TOO_MANY_REQUESTS, "trace_password_capacity") => {
+                Some(Self::PasswordCapacity)
+            }
+            (StatusCode::TOO_MANY_REQUESTS, "trace_password_change_rate_limited") => {
+                Some(Self::PasswordRateLimited)
+            }
+            (StatusCode::BAD_REQUEST, "trace_reactivation_expiry_required") => {
+                Some(Self::ReactivationExpiryRequired)
+            }
+            (StatusCode::CONFLICT, "trace_reactivation_required") => {
+                Some(Self::ReactivationRequired)
+            }
+            _ => None,
+        }
+    }
+}
+
 fn validate_hosted_trace_identity(trace: &HostedTrace, expected: Option<&str>) -> Result<()> {
     crate::metadata_store::validate_trace_id(&trace.trace_id)
         .context("hosted API returned an invalid Trace identifier")?;
@@ -146,8 +195,17 @@ pub(crate) struct ShareStatus {
 #[derive(Debug)]
 pub(crate) enum ShareStatusError {
     Authentication,
+    Hosted(HostedShareError),
     NotFound,
     Unavailable,
+}
+
+pub(crate) struct SharePackageOptions<'a> {
+    pub(crate) visibility: ShareVisibility,
+    pub(crate) password: Option<&'a str>,
+    pub(crate) expires_in_days: Option<u32>,
+    pub(crate) force: bool,
+    pub(crate) reactivate: bool,
 }
 
 /// Verifies and shares exact already-snapshotted package bytes.
@@ -155,10 +213,7 @@ pub(crate) async fn share_package_bytes(
     archive: &[u8],
     trusted_key: Option<&str>,
     shared_trust: Option<&RegistrySnapshot>,
-    visibility: ShareVisibility,
-    password: Option<&str>,
-    expires_in_days: Option<u32>,
-    force: bool,
+    options: SharePackageOptions<'_>,
 ) -> Result<(ShareOutput, String, String)> {
     let embedded_key = trace_package_notary_key_bytes(archive)
         .context("validating notarized .llmtrace; nothing was uploaded")?;
@@ -183,7 +238,7 @@ pub(crate) async fn share_package_bytes(
             provider_host: verified.manifest.provider_host(),
             request_path: &verified.request_path,
         },
-        force,
+        options.force,
     )
     .context("local public disclosure safety check failed; nothing was uploaded")?;
     let archive_sha256 = sha256_hex(archive);
@@ -213,10 +268,11 @@ pub(crate) async fn share_package_bytes(
         package_format: TRACE_PACKAGE_FORMAT,
         package_size_bytes: archive.len() as u64,
         package_sha256: &archive_sha256,
-        visibility: visibility.as_str(),
-        password,
-        expires_in_days,
-        allow_high_entropy: force,
+        visibility: options.visibility.as_str(),
+        password: options.password,
+        expires_in_days: options.expires_in_days,
+        allow_high_entropy: options.force,
+        reactivate: options.reactivate,
     };
     let share = submit_archive(&authenticated, archive, &idempotency_key, &request).await?;
     let status_url = absolute_status_url(&authenticated.origin, &share.status_url)?;
@@ -230,7 +286,7 @@ pub(crate) async fn share_package_bytes(
         .as_deref()
         .map(|value| absolute_same_origin_url(&authenticated.origin, value))
         .transpose()?;
-    let access_enabled = share.status != HostedTraceStatus::Stopped;
+    let access_enabled = share_url.is_some();
     let output = ShareOutput {
         hosted_trace_id: share.trace_id,
         state: share.status,
@@ -276,9 +332,7 @@ async fn share_status_with_authenticated(
         .send()
         .await
         .map_err(|_| ShareStatusError::Unavailable)?;
-    if let Some(error) = share_status_http_error(response.status()) {
-        return Err(error);
-    }
+    let response = share_mutation_response(response).await?;
     let trace = response
         .json::<HostedTrace>()
         .await
@@ -343,9 +397,7 @@ pub(crate) async fn stop_sharing(
         .send()
         .await
         .map_err(|_| ShareStatusError::Unavailable)?;
-    if let Some(error) = share_status_http_error(response.status()) {
-        return Err(error);
-    }
+    share_mutation_response(response).await?;
     Ok(())
 }
 
@@ -375,9 +427,7 @@ async fn update_share_settings_with_authenticated(
         .send()
         .await
         .map_err(|_| ShareStatusError::Unavailable)?;
-    if let Some(error) = share_status_http_error(response.status()) {
-        return Err(error);
-    }
+    let response = share_mutation_response(response).await?;
     let trace = response
         .json::<HostedTrace>()
         .await
@@ -398,7 +448,7 @@ fn hosted_trace_status(origin: &ApiOrigin, trace: HostedTrace) -> Result<ShareSt
         .as_deref()
         .map(|value| absolute_same_origin_url(origin, value))
         .transpose()?;
-    let access_enabled = trace.status != HostedTraceStatus::Stopped;
+    let access_enabled = share_url.is_some();
     Ok(ShareStatus {
         hosted_trace_id: trace.trace_id,
         state: trace.status,
@@ -412,12 +462,24 @@ fn hosted_trace_status(origin: &ApiOrigin, trace: HostedTrace) -> Result<ShareSt
     })
 }
 
-fn share_status_http_error(status: StatusCode) -> Option<ShareStatusError> {
+async fn share_mutation_response(
+    response: Response,
+) -> std::result::Result<Response, ShareStatusError> {
+    let status = response.status();
     match status {
-        StatusCode::NOT_FOUND => Some(ShareStatusError::NotFound),
-        StatusCode::UNAUTHORIZED => Some(ShareStatusError::Authentication),
-        status if !status.is_success() => Some(ShareStatusError::Unavailable),
-        _ => None,
+        StatusCode::NOT_FOUND => return Err(ShareStatusError::NotFound),
+        StatusCode::UNAUTHORIZED => return Err(ShareStatusError::Authentication),
+        status if status.is_success() => return Ok(response),
+        _ => {}
+    }
+    let code = response
+        .json::<ApiErrorResponse>()
+        .await
+        .map(|body| body.error)
+        .map_err(|_| ShareStatusError::Unavailable)?;
+    match HostedShareError::classify(status, &code) {
+        Some(error) => Err(ShareStatusError::Hosted(error)),
+        None => Err(ShareStatusError::Unavailable),
     }
 }
 
@@ -597,7 +659,7 @@ fn is_loopback_host(url: &url::Url) -> bool {
     })
 }
 
-async fn api_json<T: DeserializeOwned>(response: Response, action: &str) -> Result<T> {
+async fn api_json<T: DeserializeOwned>(response: Response, action: &'static str) -> Result<T> {
     let status = response.status();
     if status.is_success() {
         return response
@@ -621,7 +683,12 @@ async fn api_json<T: DeserializeOwned>(response: Response, action: &str) -> Resu
             "{action} failed: {message}; connect an account through the local dashboard or administration API"
         );
     }
-    bail!("{action} failed with HTTP {status}: {message}")
+    Err(HostedApiError {
+        action,
+        status,
+        code: message,
+    }
+    .into())
 }
 
 fn absolute_status_url(origin: &ApiOrigin, status_url: &str) -> Result<String> {
@@ -690,7 +757,7 @@ mod tests {
     }
 
     #[test]
-    fn hosted_status_is_canonical_and_stopped_disables_access() {
+    fn hosted_status_is_canonical_and_public_urls_define_access() {
         for legacy in ["preparing", "uploading", "queued", "admitted"] {
             assert!(
                 serde_json::from_value::<HostedTrace>(hosted_trace_json(legacy, "unlisted", false))
@@ -709,6 +776,17 @@ mod tests {
         .unwrap();
         assert_eq!(status.state, HostedTraceStatus::Stopped);
         assert!(!status.access_enabled);
+
+        let expired =
+            serde_json::from_value::<HostedTrace>(hosted_trace_json("shared", "unlisted", false))
+                .unwrap();
+        let status = hosted_trace_status(
+            &ApiOrigin::parse("https://notary.example").unwrap(),
+            expired,
+        )
+        .unwrap();
+        assert_eq!(status.state, HostedTraceStatus::Shared);
+        assert!(!status.access_enabled);
     }
 
     #[tokio::test]
@@ -722,6 +800,7 @@ mod tests {
             assert!(headers.contains_key("idempotency-key"));
             assert_eq!(request["visibility"], "unlisted");
             assert_eq!(request["allow_high_entropy"], true);
+            assert_eq!(request["reactivate"], false);
             assert_eq!(request["source_trace_id"], "trc-source");
             assert_eq!(request["package_format"], TRACE_PACKAGE_FORMAT);
             let size = request["package_size_bytes"].as_u64().unwrap();
@@ -793,6 +872,7 @@ mod tests {
             password: None,
             expires_in_days: None,
             allow_high_entropy: true,
+            reactivate: false,
         };
         let result = submit_archive(&authenticated, archive, "idempotency-key", &request)
             .await
@@ -902,20 +982,72 @@ mod tests {
         );
     }
 
-    #[test]
-    fn sharing_status_preserves_not_found_authentication_and_outage_errors() {
-        assert!(matches!(
-            share_status_http_error(StatusCode::NOT_FOUND),
-            Some(ShareStatusError::NotFound)
-        ));
-        assert!(matches!(
-            share_status_http_error(StatusCode::UNAUTHORIZED),
-            Some(ShareStatusError::Authentication)
-        ));
-        assert!(matches!(
-            share_status_http_error(StatusCode::BAD_GATEWAY),
-            Some(ShareStatusError::Unavailable)
-        ));
-        assert!(share_status_http_error(StatusCode::OK).is_none());
+    #[tokio::test]
+    async fn share_response_parser_preserves_only_allowlisted_remote_errors() {
+        async fn response(Path(case): Path<String>) -> (StatusCode, Json<serde_json::Value>) {
+            let (status, code) = match case.as_str() {
+                "billing" => (StatusCode::PAYMENT_REQUIRED, "billing_review"),
+                "quota" => (StatusCode::PAYMENT_REQUIRED, "trace_storage_quota_exceeded"),
+                "capacity" => (StatusCode::TOO_MANY_REQUESTS, "trace_password_capacity"),
+                "rate" => (
+                    StatusCode::TOO_MANY_REQUESTS,
+                    "trace_password_change_rate_limited",
+                ),
+                "expiry" => (
+                    StatusCode::BAD_REQUEST,
+                    "trace_reactivation_expiry_required",
+                ),
+                "reactivate" => (StatusCode::CONFLICT, "trace_reactivation_required"),
+                "missing" => (StatusCode::NOT_FOUND, "sensitive_remote_detail"),
+                "auth" => (StatusCode::UNAUTHORIZED, "sensitive_remote_detail"),
+                _ => (StatusCode::BAD_GATEWAY, "untrusted_remote_code"),
+            };
+            (
+                status,
+                Json(serde_json::json!({
+                    "error": code,
+                    "message": "sensitive remote detail"
+                })),
+            )
+        }
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let app = Router::new().route("/{case}", get(response));
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let client = http_client_builder().build().unwrap();
+        for (case, expected) in [
+            ("billing", HostedShareError::BillingReview),
+            ("quota", HostedShareError::StorageQuotaExceeded),
+            ("capacity", HostedShareError::PasswordCapacity),
+            ("rate", HostedShareError::PasswordRateLimited),
+            ("expiry", HostedShareError::ReactivationExpiryRequired),
+            ("reactivate", HostedShareError::ReactivationRequired),
+        ] {
+            let error = share_mutation_response(
+                client.get(format!("{origin}/{case}")).send().await.unwrap(),
+            )
+            .await
+            .unwrap_err();
+            assert!(matches!(error, ShareStatusError::Hosted(actual) if actual == expected));
+        }
+        for (case, expected) in [
+            ("missing", "not_found"),
+            ("auth", "authentication"),
+            ("unknown", "unavailable"),
+        ] {
+            let error = share_mutation_response(
+                client.get(format!("{origin}/{case}")).send().await.unwrap(),
+            )
+            .await
+            .unwrap_err();
+            assert!(matches!(
+                (error, expected),
+                (ShareStatusError::NotFound, "not_found")
+                    | (ShareStatusError::Authentication, "authentication")
+                    | (ShareStatusError::Unavailable, "unavailable")
+            ));
+        }
+        server.abort();
     }
 }

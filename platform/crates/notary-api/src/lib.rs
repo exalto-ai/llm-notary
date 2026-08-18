@@ -1082,6 +1082,7 @@ mod tests {
             "GET /api/registry",
             "GET /api/traces",
             "GET /api/traces/{trace_id}",
+            "GET /api/traces/{trace_id}/package.llmtrace",
             "GET /api/usage",
             "PATCH /api/traces/{trace_id}",
             "POST /api/api-keys",

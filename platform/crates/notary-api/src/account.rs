@@ -67,6 +67,7 @@ struct HostedTraceUsage {
     total: i64,
     shared: i64,
     verifying: i64,
+    needs_attention: i64,
     stored_bytes: i64,
 }
 
@@ -202,12 +203,14 @@ async fn usage(
     };
     let credits = credits::account_access(&state, &account_id).await?;
     let operations = account_notary_stats(&state.database, &account_id).await?;
-    let (total, admitted, in_progress, stored_bytes) = sqlx::query_as::<_, (i64, i64, i64, i64)>(
-        "SELECT COUNT(*)::BIGINT,
-                COUNT(*) FILTER (WHERE status IN ('shared', 'stopped'))::BIGINT,
+    let (total, shared, in_progress, needs_attention, stored_bytes) =
+        sqlx::query_as::<_, (i64, i64, i64, i64, i64)>(
+            "SELECT COUNT(*)::BIGINT,
+                COUNT(*) FILTER (WHERE status = 'shared')::BIGINT,
                 COUNT(*) FILTER (
                     WHERE status IN ('uploading', 'queued', 'verifying')
                 )::BIGINT,
+                COUNT(*) FILTER (WHERE status IN ('rejected', 'failed'))::BIGINT,
                 COALESCE(SUM(
                     COALESCE(admitted_package_size_bytes, declared_package_size_bytes)
                 ) FILTER (
@@ -216,18 +219,19 @@ async fn usage(
                     )
                 ), 0)::BIGINT
          FROM traces WHERE account_id = $1",
-    )
-    .bind(&account_id)
-    .fetch_one(&state.database)
-    .await
-    .map_err(database_error)?;
+        )
+        .bind(&account_id)
+        .fetch_one(&state.database)
+        .await
+        .map_err(database_error)?;
     Ok(Json(UsageResponse {
         credits,
         operations,
         hosted_traces: HostedTraceUsage {
             total,
-            shared: admitted,
+            shared,
             verifying: in_progress,
+            needs_attention,
             stored_bytes,
         },
     }))

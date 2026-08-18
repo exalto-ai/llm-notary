@@ -72,6 +72,25 @@ hosted account settings and is never revoked by the local app.
 Connecting does not upload or share local Traces. It authorizes only the hosted
 features the user later chooses to invoke.
 
+## Share a Notarized Trace
+
+**Share** is a secondary action inside one Notarized Trace. Capturing,
+Captured, failed, and Notarizing traces are not eligible. If no hosted account
+is connected, Share keeps the same Trace open while the user completes browser
+approval; connecting alone uploads nothing.
+
+Before upload, the app renders the disclosed conversation and tool content
+from the exact `.llmtrace` package—not from the private `.llmcapture`
+checkpoint—and identifies the publishing account. The user chooses Unlisted
+or Listed visibility, an optional password, and an optional expiration before
+confirming **Share trace**. Unlisted is link-accessible, not private.
+
+Verifying, Shared, Stopped, Rejected, and Sharing failed remain inline on the
+originating Trace. A successful share exposes **Copy link**,
+**Open shared trace**, **Manage access**, and **Stop sharing**. Access changes
+reuse the one canonical link. Stopping sharing makes that link unavailable
+without deleting the local Trace or changing its Notarized state.
+
 ## Activity and Providers
 
 Activity keeps severity, date, and Trace ID directly visible. Operation ID and

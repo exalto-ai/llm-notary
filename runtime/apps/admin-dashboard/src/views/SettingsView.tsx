@@ -96,14 +96,14 @@ export function useDesktopSettingsBridge(
   return { state: suppliedState ?? bridgedState, send };
 }
 
-type AccountConnectionController = ReturnType<typeof useAccountConnection>;
+export type AccountConnectionController = ReturnType<typeof useAccountConnection>;
 
 function accountPollRetryDelaySeconds(intervalSeconds: number, failures: number) {
   const base = Math.max(1, intervalSeconds);
   return Math.min(30, base * 2 ** Math.min(Math.max(0, failures - 1), 4));
 }
 
-function useAccountConnection(api: LocalApi) {
+export function useAccountConnection(api: LocalApi) {
   const queryClient = useQueryClient();
   const account = useQuery({ queryKey: ['account'], queryFn: api.account, retry: false });
   const [started, setStarted] = useState<{
@@ -201,7 +201,7 @@ function useAccountConnection(api: LocalApi) {
   };
 }
 
-function accountDisplayName(account: AccountConnection) {
+export function accountDisplayName(account: AccountConnection) {
   return account.display_name || account.provider_display_name || 'Notary Account';
 }
 
@@ -219,7 +219,7 @@ function accountConnectionLabel(account: AccountConnection | undefined, error: u
   return 'Not connected';
 }
 
-function AccountConnectionCard({
+export function AccountConnectionCard({
   controller,
   compact = false,
   fixture = false,

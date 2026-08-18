@@ -380,7 +380,7 @@ export interface paths {
         post?: never;
         /**
          * Stop sharing a Trace
-         * @description Stops public access to the canonical share without deleting or changing the local Notarized Trace.
+         * @description Stops public access while retaining the canonical hosted identity for an explicit later resume.
          */
         delete: operations["delete_trace_share"];
         options?: never;
@@ -625,6 +625,11 @@ export interface components {
              *     logged, returned, or persisted by notaryd.
              */
             password?: string | null;
+            /**
+             * @description Explicitly restore public access to a stopped canonical share. Access
+             *     settings can be edited without reactivating it when this is false.
+             */
+            reactivate?: boolean;
             visibility: components["schemas"]["ShareVisibility"];
         };
         ReadinessResponse: {
@@ -634,7 +639,7 @@ export interface components {
             status: string;
         };
         /** @enum {string} */
-        ShareProgress: "preparing" | "uploading" | "verifying" | "shared" | "rejected" | "failed";
+        ShareProgress: "verifying" | "shared" | "stopped" | "rejected" | "failed";
         /** @enum {string} */
         ShareVisibility: "unlisted" | "listed";
         StatusResponse: {
@@ -1657,6 +1662,14 @@ export interface operations {
                     "application/json": components["schemas"]["TraceShare"];
                 };
             };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -1665,7 +1678,31 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorEnvelope"];
                 };
             };
+            402: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            429: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -1730,6 +1767,14 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorEnvelope"];
                 };
             };
+            402: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -1739,6 +1784,22 @@ export interface operations {
                 };
             };
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            429: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -1775,14 +1836,55 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Sharing stopped */
-            204: {
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["TraceShare"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
             };
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            402: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            429: {
                 headers: {
                     [name: string]: unknown;
                 };

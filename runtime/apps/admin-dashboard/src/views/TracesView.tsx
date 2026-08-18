@@ -48,6 +48,8 @@ import type {
   LocalApi,
   Operation,
   OperationSummary,
+  ShareSettings,
+  ShareVisibility,
   TraceDetail,
   TraceSummary,
   Verification,
@@ -70,12 +72,47 @@ import {
   stateTone,
   timeRangeStart,
 } from '../shared';
+import { AccountConnectionCard, accountDisplayName, useAccountConnection } from './SettingsView';
 
 type Route = DashboardRoute;
 
 type TraceFilters = NonNullable<Parameters<LocalApi['traces']>[0]>;
 type TraceStateFilter = NonNullable<TraceFilters['state']>;
 type TraceStatusFilter = NonNullable<TraceFilters['status']>;
+type ShareDialogMode = 'create' | 'manage' | 'resume' | 'retry';
+
+function shareProgressLabel(progress: string) {
+  switch (progress) {
+    case 'verifying':
+      return 'Verifying';
+    case 'shared':
+      return 'Shared';
+    case 'stopped':
+      return 'Stopped';
+    case 'rejected':
+      return 'Rejected';
+    default:
+      return 'Sharing failed';
+  }
+}
+
+function ShareProgressTimeline({ progress }: { progress: string }) {
+  const stages = ['verifying', 'shared'];
+  const current = stages.indexOf(progress);
+  return (
+    <ol className="share-progress-timeline" aria-label="Share progress">
+      {stages.map((stage, index) => (
+        <li
+          key={stage}
+          className={index < current ? 'is-complete' : index === current ? 'is-current' : ''}
+          aria-current={index === current ? 'step' : undefined}
+        >
+          {shareProgressLabel(stage)}
+        </li>
+      ))}
+    </ol>
+  );
+}
 
 function notarizationPhaseLabel(phase: string) {
   switch (phase) {
@@ -960,16 +997,29 @@ function NotarizedTraceInspector({
     queryKey: ['capture', captureId],
     queryFn: () => api.trace(captureId),
   });
+  const accountConnection = useAccountConnection(api);
   const [verification, setVerification] = useState<Verification | null>(null);
   const [activeTab, setActiveTab] = useState<string | null>('summary');
-  const [shareConfirmation, setShareConfirmation] = useState(false);
+  const [shareDialogMode, setShareDialogMode] = useState<ShareDialogMode | null>(null);
+  const [shareVisibility, setShareVisibility] = useState<ShareVisibility>('unlisted');
+  const [shareExpiry, setShareExpiry] = useState('none');
+  const [sharePasswordMode, setSharePasswordMode] = useState('none');
+  const [sharePassword, setSharePassword] = useState('');
+  const [shareHighEntropyReview, setShareHighEntropyReview] = useState(false);
+  const [stopConfirmation, setStopConfirmation] = useState(false);
   const [shareRequested, setShareRequested] = useState(false);
   const currentCapture = useRef(captureId);
   useEffect(() => {
     currentCapture.current = captureId;
     setVerification(null);
     setActiveTab('summary');
-    setShareConfirmation(false);
+    setShareDialogMode(null);
+    setShareVisibility('unlisted');
+    setShareExpiry('none');
+    setSharePasswordMode('none');
+    setSharePassword('');
+    setShareHighEntropyReview(false);
+    setStopConfirmation(false);
     setShareRequested(false);
   }, [captureId]);
   const verify = useMutation({
@@ -1015,28 +1065,45 @@ function NotarizedTraceInspector({
     retry: false,
     refetchInterval: (query) => {
       const progress = query.state.data?.progress;
-      return !progress || ['shared', 'rejected', 'failed'].includes(progress) ? false : 3_000;
+      return !progress || ['shared', 'stopped', 'rejected', 'failed'].includes(progress)
+        ? false
+        : 3_000;
     },
   });
-  const createShare = useMutation({
-    mutationFn: () => api.share(captureId, 'unlisted'),
-    onSuccess: (share) => {
-      setShareConfirmation(false);
+  const saveShare = useMutation({
+    mutationFn: ({ settings }: { settings: ShareSettings; mode: ShareDialogMode }) =>
+      api.share(captureId, settings),
+    onSuccess: (share, request) => {
+      setShareDialogMode(null);
+      setSharePassword('');
+      setShareHighEntropyReview(false);
       setShareRequested(true);
       queryClient.setQueryData(['share', captureId], share);
       queryClient.invalidateQueries({ queryKey: ['capture', captureId] });
       notifications.show({
-        title: 'Unlisted share started',
-        message: 'The disclosed package is being verified before a public URL is created.',
+        title: request.mode === 'manage' ? 'Access updated' : 'Sharing started',
+        message:
+          request.mode === 'manage'
+            ? 'The canonical share now uses the selected access settings.'
+            : 'The exact disclosed package is being verified before its public URL becomes active.',
       });
     },
-    onError: (error) => mutationError('Could not share this Trace', error),
+    onError: (error) => {
+      if (error instanceof LocalApiError && error.code === 'account_authentication_required') {
+        void queryClient.invalidateQueries({ queryKey: ['account'] });
+      }
+      if (error instanceof LocalApiError && error.code === 'share_high_entropy_review_required') {
+        setShareHighEntropyReview(true);
+        return;
+      }
+      mutationError('Could not share this Trace', error);
+    },
   });
   const stopShare = useMutation({
     mutationFn: () => api.stopSharing(captureId),
-    onSuccess: () => {
-      setShareRequested(false);
-      queryClient.setQueryData(['share', captureId], null);
+    onSuccess: (share) => {
+      setShareRequested(true);
+      queryClient.setQueryData(['share', captureId], share);
       queryClient.invalidateQueries({ queryKey: ['capture', captureId] });
       notifications.show({
         title: 'Sharing stopped',
@@ -1061,6 +1128,43 @@ function NotarizedTraceInspector({
   const activeShare = shareStatus.isSuccess
     ? shareStatus.data
     : (shareStatus.data ?? detail.data.share);
+  const account = accountConnection.account.data;
+  const accountConnected = Boolean(account?.signed_in || account?.connection_state === 'connected');
+  const openShareDialog = (mode: ShareDialogMode) => {
+    setShareDialogMode(mode);
+    setShareVisibility(activeShare?.visibility ?? 'unlisted');
+    const stoppedWithElapsedExpiry =
+      mode === 'resume' &&
+      activeShare?.expires_at_unix_ms != null &&
+      activeShare.expires_at_unix_ms <= Date.now();
+    setShareExpiry(mode === 'create' ? 'none' : stoppedWithElapsedExpiry ? 'clear' : 'keep');
+    setSharePasswordMode(mode === 'create' ? 'none' : 'keep');
+    setSharePassword('');
+    setShareHighEntropyReview(false);
+  };
+  const passwordWillBeSet =
+    shareDialogMode === 'create' ? sharePassword.length > 0 : sharePasswordMode === 'replace';
+  const passwordIsValid =
+    !passwordWillBeSet || (sharePassword.length >= 8 && sharePassword.length <= 128);
+  const submitShare = () => {
+    if (!shareDialogMode || !passwordIsValid) return;
+    const settings: ShareSettings = { visibility: shareVisibility };
+    if (shareDialogMode === 'create') {
+      // Explicit clears distinguish a reviewed initial/re-share choice from
+      // patch-style omission, which means keep the current hosted control.
+      settings.expires_in_days = shareExpiry === 'none' ? 0 : Number(shareExpiry);
+      settings.password = sharePassword;
+    } else {
+      if (shareExpiry === 'clear') settings.expires_in_days = 0;
+      else if (shareExpiry !== 'keep') settings.expires_in_days = Number(shareExpiry);
+      if (sharePasswordMode === 'remove') settings.password = '';
+      else if (sharePasswordMode === 'replace') settings.password = sharePassword;
+    }
+    if (shareDialogMode === 'resume') settings.reactivate = true;
+    if (shareDialogMode === 'retry' && activeShare?.progress === 'rejected') settings.force = true;
+    if (shareHighEntropyReview) settings.force = true;
+    saveShare.mutate({ settings, mode: shareDialogMode });
+  };
   return (
     <article className="trace-inspector">
       {mobile && (
@@ -1111,7 +1215,7 @@ function NotarizedTraceInspector({
             <Button
               variant="outline"
               leftSection={<Send size={15} />}
-              onClick={() => setShareConfirmation(true)}
+              onClick={() => openShareDialog('create')}
             >
               Share
             </Button>
@@ -1121,18 +1225,26 @@ function NotarizedTraceInspector({
       {activeShare && (
         <Paper className="trace-share-status">
           <div>
-            <Text className="eyebrow">
-              {activeShare.visibility === 'listed' ? 'Listed share' : 'Unlisted share'}
-            </Text>
+            <Text className="eyebrow">{shareProgressLabel(activeShare.progress)}</Text>
             <Text>
-              {!activeShare.access_enabled
+              {activeShare.progress === 'stopped'
                 ? 'Public access is disabled for this share.'
-                : activeShare.progress === 'shared'
-                  ? activeShare.visibility === 'listed'
-                    ? 'This disclosed Trace is publicly listed and readable.'
-                    : 'Anyone with this URL can read the disclosed Trace.'
-                  : `Status · ${activeShare.progress}`}
+                : activeShare.progress === 'shared' && !activeShare.access_enabled
+                  ? 'Public access for this share has expired.'
+                  : activeShare.progress === 'shared'
+                    ? activeShare.visibility === 'listed'
+                      ? 'This disclosed Trace is publicly listed and readable.'
+                      : 'Anyone with this URL can read the disclosed Trace.'
+                    : `${activeShare.visibility === 'listed' ? 'Listed' : 'Unlisted'} access · ${activeShare.password_protected ? 'password required' : 'no password'}${activeShare.expires_at_unix_ms ? ` · expires ${formatDate(activeShare.expires_at_unix_ms)}` : ''}`}
             </Text>
+            {activeShare.failure_code && (
+              <Text>
+                Safe failure code · <code>{activeShare.failure_code}</code>
+              </Text>
+            )}
+            {!['stopped', 'rejected', 'failed'].includes(activeShare.progress) && (
+              <ShareProgressTimeline progress={activeShare.progress} />
+            )}
             {shareStatus.error && (
               <Text role="status">
                 Could not refresh share status. Showing the last known state.
@@ -1141,12 +1253,43 @@ function NotarizedTraceInspector({
           </div>
           <Group>
             {activeShare.access_enabled && activeShare.share_url && (
-              <Button
-                variant="outline"
-                leftSection={<Copy size={15} />}
-                onClick={() => void navigator.clipboard.writeText(activeShare.share_url ?? '')}
-              >
-                Copy URL
+              <>
+                <Button
+                  variant="outline"
+                  leftSection={<Copy size={15} />}
+                  onClick={() => void navigator.clipboard.writeText(activeShare.share_url ?? '')}
+                >
+                  Copy link
+                </Button>
+                <Button
+                  component="a"
+                  href={activeShare.share_url}
+                  target="_blank"
+                  rel="noreferrer"
+                  variant="outline"
+                >
+                  Open shared trace
+                </Button>
+              </>
+            )}
+            {['shared', 'stopped'].includes(activeShare.progress) && (
+              <Button variant="outline" onClick={() => openShareDialog('manage')}>
+                Manage access
+              </Button>
+            )}
+            {activeShare.progress === 'stopped' && (
+              <Button variant="outline" onClick={() => openShareDialog('resume')}>
+                Resume sharing
+              </Button>
+            )}
+            {activeShare.progress === 'failed' && (
+              <Button variant="outline" onClick={() => openShareDialog('retry')}>
+                Retry sharing
+              </Button>
+            )}
+            {activeShare.progress === 'rejected' && (
+              <Button variant="outline" onClick={() => openShareDialog('retry')}>
+                Review and retry
               </Button>
             )}
             {shareStatus.error && (
@@ -1154,15 +1297,17 @@ function NotarizedTraceInspector({
                 Retry status
               </Button>
             )}
-            <Button
-              variant="subtle"
-              color="red"
-              leftSection={<Trash2 size={15} />}
-              loading={stopShare.isPending}
-              onClick={() => stopShare.mutate()}
-            >
-              Stop sharing
-            </Button>
+            {activeShare.access_enabled && (
+              <Button
+                variant="subtle"
+                color="red"
+                leftSection={<Trash2 size={15} />}
+                loading={stopShare.isPending}
+                onClick={() => setStopConfirmation(true)}
+              >
+                Stop sharing
+              </Button>
+            )}
           </Group>
         </Paper>
       )}
@@ -1289,22 +1434,183 @@ function NotarizedTraceInspector({
           </div>
         </Tabs.Panel>
       </Tabs>
-      <AlertDialog open={shareConfirmation} onOpenChange={setShareConfirmation}>
+      <AlertDialog
+        open={shareDialogMode !== null}
+        onOpenChange={(open) => {
+          if (!open && !saveShare.isPending) setShareDialogMode(null);
+        }}
+      >
+        <AlertDialogContent className="trace-share-dialog">
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {!accountConnected
+                ? 'Connect an account to share'
+                : shareDialogMode === 'manage'
+                  ? 'Manage access'
+                  : shareDialogMode === 'resume'
+                    ? 'Resume sharing'
+                    : shareDialogMode === 'retry'
+                      ? 'Review and retry sharing'
+                      : 'Review and share this Trace'}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {!accountConnected
+                ? 'Connecting an account does not upload or share local evidence. After approval, this review will remain on the same Notarized Trace.'
+                : 'Review the exact conversation and tool content disclosed by the portable package, then choose access settings.'}
+            </AlertDialogDescription>
+            {accountConnected &&
+              shareDialogMode === 'retry' &&
+              activeShare?.progress === 'rejected' && (
+                <Text>
+                  Retry can override only a reviewed unexplained high-entropy finding. Known
+                  credential patterns and other disclosure-safety failures remain blocked.
+                </Text>
+              )}
+          </AlertDialogHeader>
+          {!accountConnected ? (
+            <AccountConnectionCard controller={accountConnection} compact />
+          ) : (
+            <div className="trace-share-review">
+              <section className="trace-share-disclosure" aria-label="Disclosure review">
+                <Text className="eyebrow">Exact package disclosure</Text>
+                <TraceTranscriptView transcripts={transcripts} />
+              </section>
+              <aside className="trace-share-settings">
+                <dl className="sharing-facts">
+                  <Fact label="Evidence state" value="Notarized" />
+                  <Fact
+                    label="Publishing account"
+                    value={account ? accountDisplayName(account) : 'Notary Account'}
+                  />
+                  <Fact label="Hosted artifact" value="Exact portable .llmtrace package" />
+                  <Fact label="Visible" value="Prompts, responses, and disclosed tool data" />
+                  <Fact label="Hidden" value="Raw HTTP header values and provider credentials" />
+                </dl>
+                <AxisSelect
+                  ariaLabel="Share visibility"
+                  label="Visibility"
+                  placeholder="Choose visibility"
+                  data={[
+                    { value: 'unlisted', label: 'Unlisted · link access' },
+                    { value: 'listed', label: 'Listed · public discovery' },
+                  ]}
+                  value={shareVisibility}
+                  onChange={(value) =>
+                    setShareVisibility(value === 'listed' ? 'listed' : 'unlisted')
+                  }
+                  clearable={false}
+                />
+                <Text className="share-access-warning">
+                  {shareVisibility === 'unlisted'
+                    ? 'Unlisted is not private. Anyone with the URL can access an unprotected, unexpired Trace.'
+                    : 'Listed traces can appear in public Traces after verification.'}
+                </Text>
+                {shareDialogMode !== 'create' && (
+                  <AxisSelect
+                    ariaLabel="Password protection"
+                    label="Password"
+                    placeholder="Keep current password setting"
+                    data={[
+                      { value: 'keep', label: 'Keep current setting' },
+                      { value: 'remove', label: 'Remove password' },
+                      { value: 'replace', label: 'Set or replace password' },
+                    ]}
+                    value={sharePasswordMode}
+                    onChange={(value) => setSharePasswordMode(value ?? 'keep')}
+                    clearable={false}
+                  />
+                )}
+                {(shareDialogMode === 'create' || sharePasswordMode === 'replace') && (
+                  <TextInput
+                    label="Optional password"
+                    type="password"
+                    autoComplete="new-password"
+                    value={sharePassword}
+                    onChange={(event) => setSharePassword(event.currentTarget.value)}
+                    maxLength={128}
+                    error={passwordIsValid ? undefined : 'Use 8 to 128 characters.'}
+                  />
+                )}
+                <AxisSelect
+                  ariaLabel="Share expiration"
+                  label="Expiration"
+                  placeholder="Choose expiration"
+                  data={
+                    shareDialogMode === 'create'
+                      ? [
+                          { value: 'none', label: 'No expiration' },
+                          { value: '1', label: '1 day' },
+                          { value: '7', label: '7 days' },
+                          { value: '30', label: '30 days' },
+                          { value: '90', label: '90 days' },
+                          { value: '365', label: '1 year' },
+                        ]
+                      : [
+                          { value: 'keep', label: 'Keep current expiration' },
+                          { value: 'clear', label: 'No expiration' },
+                          { value: '1', label: '1 day from now' },
+                          { value: '7', label: '7 days from now' },
+                          { value: '30', label: '30 days from now' },
+                          { value: '90', label: '90 days from now' },
+                          { value: '365', label: '1 year from now' },
+                        ]
+                  }
+                  value={shareExpiry}
+                  onChange={(value) =>
+                    setShareExpiry(value ?? (shareDialogMode === 'create' ? 'none' : 'keep'))
+                  }
+                  clearable={false}
+                />
+                {saveShare.isPending && (
+                  <Text role="status">Preparing and uploading the exact package…</Text>
+                )}
+                {shareHighEntropyReview && (
+                  <Text role="alert">
+                    An unexplained high-entropy value was found in the disclosed package. Review the
+                    complete disclosure above. Continuing overrides only this heuristic; known
+                    credential patterns and unsafe fields remain blocked.
+                  </Text>
+                )}
+              </aside>
+            </div>
+          )}
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={saveShare.isPending}>
+              {accountConnected ? 'Cancel' : 'Keep local only'}
+            </AlertDialogCancel>
+            {accountConnected && (
+              <Button disabled={!passwordIsValid || saveShare.isPending} onClick={submitShare}>
+                {saveShare.isPending
+                  ? shareDialogMode === 'manage'
+                    ? 'Saving…'
+                    : shareDialogMode === 'resume'
+                      ? 'Resuming…'
+                      : 'Sharing…'
+                  : shareDialogMode === 'manage'
+                    ? 'Save access'
+                    : shareDialogMode === 'resume'
+                      ? 'Resume sharing'
+                      : shareHighEntropyReview
+                        ? 'Share after review'
+                        : 'Share trace'}
+              </Button>
+            )}
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+      <AlertDialog open={stopConfirmation} onOpenChange={setStopConfirmation}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Create an unlisted share?</AlertDialogTitle>
+            <AlertDialogTitle>Stop sharing this Trace?</AlertDialogTitle>
             <AlertDialogDescription>
-              Anyone with the URL can read the disclosed prompt, response, and tool data. Header
-              values remain hidden. Review the Trace before continuing.
+              The canonical public URL will become unavailable. The local Trace and its Notarized
+              state will not change or be deleted.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              disabled={createShare.isPending}
-              onClick={() => createShare.mutate()}
-            >
-              {createShare.isPending ? 'Starting…' : 'Create unlisted share'}
+            <AlertDialogAction disabled={stopShare.isPending} onClick={() => stopShare.mutate()}>
+              Stop sharing
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
