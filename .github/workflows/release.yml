@@ -291,8 +291,8 @@ jobs:
             "notary-runtime-${version}-linux-aarch64.tar.gz" \
             "notary-runtime-${version}-darwin-aarch64.tar.gz" \
             "notary-runtime-${version}-windows-x86_64.zip" \
-            "LLM-Notary-macos-arm64.dmg" \
-            "LLM-Notary-macos-arm64.app.tar.gz" \
+            "Notary-macos-arm64.dmg" \
+            "Notary-macos-arm64.app.tar.gz" \
             "notaryctl-linux-x86_64" \
             "notaryd-linux-x86_64" \
             "notaryctl-linux-aarch64" \
@@ -306,7 +306,7 @@ jobs:
             test -f "release/$asset.sha256"
             (cd release && sha256sum --check "$asset.sha256")
           done
-          test -s release/LLM-Notary-macos-arm64.app.tar.gz.sig
+          test -s release/Notary-macos-arm64.app.tar.gz.sig
           test -s release/release.json.sig
           test -s release/channel.json
           build_id="$(jq -er .build_id release/release.json)"
@@ -412,9 +412,9 @@ jobs:
           base64 --decode "$RUNNER_TEMP/public-release/release.json.sig" > "$RUNNER_TEMP/release.minisig"
           minisign -Vm "$RUNNER_TEMP/public-release/release.json" \
             -p "$RUNNER_TEMP/updater.pub" -x "$RUNNER_TEMP/release.minisig"
-          base64 --decode "$RUNNER_TEMP/public-release/LLM-Notary-macos-arm64.app.tar.gz.sig" \
+          base64 --decode "$RUNNER_TEMP/public-release/Notary-macos-arm64.app.tar.gz.sig" \
             > "$RUNNER_TEMP/desktop.minisig"
-          minisign -Vm "$RUNNER_TEMP/public-release/LLM-Notary-macos-arm64.app.tar.gz" \
+          minisign -Vm "$RUNNER_TEMP/public-release/Notary-macos-arm64.app.tar.gz" \
             -p "$RUNNER_TEMP/updater.pub" -x "$RUNNER_TEMP/desktop.minisig"
           jq -r .signed "$RUNNER_TEMP/public-release/channel.json" \
             | base64 --decode > "$RUNNER_TEMP/channel.payload.json"

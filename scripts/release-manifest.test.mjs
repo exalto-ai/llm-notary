@@ -12,7 +12,7 @@ const names = [
   `notary-runtime-${version}-linux-aarch64.tar.gz`, 'notaryctl-linux-aarch64', 'notaryd-linux-aarch64',
   `notary-runtime-${version}-darwin-aarch64.tar.gz`, 'notaryctl-darwin-aarch64', 'notaryd-darwin-aarch64',
   `notary-runtime-${version}-windows-x86_64.zip`, 'notaryctl-windows-x86_64.exe', 'notaryd-windows-x86_64.exe',
-  'LLM-Notary-macos-arm64.dmg', 'LLM-Notary-macos-arm64.app.tar.gz',
+  'Notary-macos-arm64.dmg', 'Notary-macos-arm64.app.tar.gz',
 ];
 const signatureText = 'untrusted comment: signature from minisign secret key\nRUTESTSIGNATURE\ntrusted comment: timestamp:1\nRUTESTTRUSTED';
 const signature = Buffer.from(signatureText).toString('base64');
@@ -20,7 +20,7 @@ const signature = Buffer.from(signatureText).toString('base64');
 async function fixture() {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'notary-release-'));
   await Promise.all(names.map((name) => writeFile(path.join(directory, name), `fixture:${name}`)));
-  await writeFile(path.join(directory, 'LLM-Notary-macos-arm64.app.tar.gz.sig'), `${signature}\n`);
+  await writeFile(path.join(directory, 'Notary-macos-arm64.app.tar.gz.sig'), `${signature}\n`);
   return directory;
 }
 
@@ -53,7 +53,7 @@ test('release manifest rejects incomplete releases and unsafe identities', async
     publishedAt: '2026-08-13T12:34:56Z',
     publicOrigin: 'https://notary.exalto.ai',
   }), /safe release identifier/);
-  await writeFile(path.join(releaseDir, 'LLM-Notary-macos-arm64.app.tar.gz.sig'), 'bad');
+  await writeFile(path.join(releaseDir, 'Notary-macos-arm64.app.tar.gz.sig'), 'bad');
   await assert.rejects(() => createReleaseManifest({
     releaseDir,
     buildId: 'a'.repeat(40) + '-123-1',

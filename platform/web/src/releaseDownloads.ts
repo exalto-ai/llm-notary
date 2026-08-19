@@ -1,6 +1,6 @@
 const latestDownloadsRoot = '/downloads/releases';
 
-export const macosDmgName = 'LLM-Notary-macos-arm64.dmg';
+export const macosDmgName = 'Notary-macos-arm64.dmg';
 
 export function latestMacosDownloadHref(pointer: string): string {
   const fields = String(pointer).trim().split(/\s+/);

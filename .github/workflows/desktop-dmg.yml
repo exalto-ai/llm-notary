@@ -125,34 +125,96 @@ jobs:
           test -n "$dmg"
           hdiutil verify "$dmg"
           mkdir -p release
-          cp "$dmg" "release/LLM-Notary-${ASSET}.dmg"
-          (cd release && shasum -a 256 "LLM-Notary-${ASSET}.dmg" > "LLM-Notary-${ASSET}.dmg.sha256")
+          cp "$dmg" "release/Notary-${ASSET}.dmg"
+          (cd release && shasum -a 256 "Notary-${ASSET}.dmg" > "Notary-${ASSET}.dmg.sha256")
           if ${{ inputs.sign }}; then
             updater=$(find "../../target/$TARGET/release/bundle/macos" -maxdepth 1 -name '*.app.tar.gz' -print -quit)
             test -n "$updater"
             test -s "$updater.sig"
-            cp "$updater" "release/LLM-Notary-${ASSET}.app.tar.gz"
-            cp "$updater.sig" "release/LLM-Notary-${ASSET}.app.tar.gz.sig"
-            (cd release && shasum -a 256 "LLM-Notary-${ASSET}.app.tar.gz" > "LLM-Notary-${ASSET}.app.tar.gz.sha256")
+            cp "$updater" "release/Notary-${ASSET}.app.tar.gz"
+            cp "$updater.sig" "release/Notary-${ASSET}.app.tar.gz.sig"
+            (cd release && shasum -a 256 "Notary-${ASSET}.app.tar.gz" > "Notary-${ASSET}.app.tar.gz.sha256")
           fi
-      - name: Verify Developer ID and notarization
+      - name: Resolve signed artifacts
+        id: artifacts
         if: inputs.sign
         run: |
           set -euo pipefail
-          app=$(find "../../target/$TARGET/release/bundle/macos" -maxdepth 1 -name '*.app' -print -quit)
-          dmg=$(find "../../target/$TARGET/release/bundle/dmg" -maxdepth 1 -name '*.dmg' -print -quit)
+          # Absolute paths: later steps match the launched process against its
+          # executable path, and a relative path never matches.
+          bundle="$(cd "../../target/$TARGET/release/bundle" && pwd)"
+          app="$(find "$bundle/macos" -maxdepth 1 -name '*.app' -print -quit)"
+          dmg="$(find "$bundle/dmg" -maxdepth 1 -name '*.dmg' -print -quit)"
           test -n "$app"
           test -n "$dmg"
-          codesign --verify --deep --strict --verbose=2 "$app"
-          codesign --verify --strict --verbose=2 "$dmg"
-          xcrun stapler validate "$app"
-          xcrun stapler validate "$dmg"
-          spctl --assess --type execute --verbose=4 "$app"
-          spctl --assess --type open --context context:primary-signature --verbose=4 "$dmg"
-          test -x "$app/Contents/MacOS/notary-app"
-          test -x "$app/Contents/MacOS/notaryd"
-          strings "$app/Contents/MacOS/notary-app" | grep -F "$NOTARY_BUILD_ID" >/dev/null
-          "$app/Contents/MacOS/notaryd" --version | grep -F "$NOTARY_BUILD_ID" >/dev/null
+          {
+            echo "app=$app"
+            echo "dmg=$dmg"
+          } >> "$GITHUB_OUTPUT"
+      - name: Verify Developer ID and notarization
+        if: inputs.sign
+        env:
+          APP: ${{ steps.artifacts.outputs.app }}
+          DMG: ${{ steps.artifacts.outputs.dmg }}
+        run: |
+          set -euo pipefail
+          codesign --verify --deep --strict --verbose=2 "$APP"
+          codesign --verify --strict --verbose=2 "$DMG"
+          xcrun stapler validate "$APP"
+          xcrun stapler validate "$DMG"
+          spctl --assess --type execute --verbose=4 "$APP"
+          spctl --assess --type open --context context:primary-signature --verbose=4 "$DMG"
+          # The installed application identity is fixed: Notary.app backed by
+          # notary-app, identified as ai.exalto.notary, with exactly the
+          # notary-app executable and its notaryd sidecar and no retired
+          # executable left in the bundle.
+          test "$(basename "$APP")" = "Notary.app"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' \
+            "$APP/Contents/Info.plist")" = "ai.exalto.notary"
+          test "$(cd "$APP/Contents/MacOS" && ls | sort | tr '\n' ' ')" = "notary-app notaryd "
+          test -x "$APP/Contents/MacOS/notary-app"
+          test -x "$APP/Contents/MacOS/notaryd"
+          test "$(lipo -archs "$APP/Contents/MacOS/notary-app")" = arm64
+          test "$(lipo -archs "$APP/Contents/MacOS/notaryd")" = arm64
+          strings "$APP/Contents/MacOS/notary-app" | grep -F "$NOTARY_BUILD_ID" >/dev/null
+          "$APP/Contents/MacOS/notaryd" --version | grep -F "$NOTARY_BUILD_ID" >/dev/null
+      - name: Launch the application from the signed DMG
+        if: inputs.sign
+        env:
+          DMG: ${{ steps.artifacts.outputs.dmg }}
+        run: |
+          set -euo pipefail
+          # Launch what a user actually installs — the bundle inside the DMG,
+          # not the build-tree copy — so a corrupt or incomplete DMG fails here
+          # rather than on a user's machine.
+          mount_point="$(mktemp -d)"
+          trap 'hdiutil detach "$mount_point" -force >/dev/null 2>&1 || true' EXIT
+          hdiutil attach "$DMG" -mountpoint "$mount_point" -nobrowse -readonly -quiet
+          app="$mount_point/Notary.app"
+          test -d "$app"
+          executable="$app/Contents/MacOS/notary-app"
+          open "$app"
+          started=false
+          for _ in $(seq 1 30); do
+            if pgrep -f "$executable" >/dev/null; then
+              started=true
+              break
+            fi
+            sleep 1
+          done
+          if test "$started" != true; then
+            echo "the packaged application never started" >&2
+            exit 1
+          fi
+          # Starting is not enough: a bundle that dies during Tauri or daemon
+          # initialization must not ship, so require it to still be running.
+          sleep 15
+          if ! pgrep -f "$executable" >/dev/null; then
+            echo "the packaged application exited during startup" >&2
+            exit 1
+          fi
+          osascript -e 'quit app "Notary"' >/dev/null 2>&1 || true
+          pkill -f "$executable" >/dev/null 2>&1 || true
       - uses: actions/upload-artifact@v7
         with:
           name: desktop-macos-arm64

@@ -147,7 +147,7 @@ const usageFixture = ({
 describe('hosted site', () => {
   test('makes the current macOS app the primary landing action', async () => {
     expect(latestMacosDownloadHref('build-123 0.1.0')).toBe(
-      '/downloads/releases/builds/build-123/LLM-Notary-macos-arm64.dmg',
+      '/downloads/releases/builds/build-123/Notary-macos-arm64.dmg',
     );
     expect(() => latestMacosDownloadHref('../build 0.1.0')).toThrow(
       'latest download pointer is invalid',
@@ -157,8 +157,8 @@ describe('hosted site', () => {
     const download = page.getByRole('link', { name: /Download for macOS/ });
     await expect
       .element(download)
-      .toHaveAttribute('href', '/downloads/releases/builds/build-123/LLM-Notary-macos-arm64.dmg');
-    await expect.element(download).toHaveAttribute('download', 'LLM-Notary-macos-arm64.dmg');
+      .toHaveAttribute('href', '/downloads/releases/builds/build-123/Notary-macos-arm64.dmg');
+    await expect.element(download).toHaveAttribute('download', 'Notary-macos-arm64.dmg');
     await expect.element(page.getByText('Apple silicon · macOS 12+')).not.toBeInTheDocument();
     await expect
       .element(page.getByRole('link', { name: 'build on the Notary stack' }))
