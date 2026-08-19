@@ -30,10 +30,8 @@ pub(super) struct DesktopUpdaterState {
 
 impl Default for DesktopUpdaterState {
     fn default() -> Self {
-        let enabled = desktop_updates_enabled(
-            env!("NOTARY_BUILD_ID"),
-            env!("NOTARY_UPDATES_ENABLED"),
-        );
+        let enabled =
+            desktop_updates_enabled(env!("NOTARY_BUILD_ID"), env!("NOTARY_UPDATES_ENABLED"));
         Self {
             view: Mutex::new(DesktopUpdateView {
                 enabled,
@@ -119,10 +117,7 @@ async fn check_and_download_update_inner(
     app: &tauri::AppHandle,
 ) -> Result<DesktopUpdateView, String> {
     let state = app.state::<DesktopUpdaterState>();
-    if !desktop_updates_enabled(
-        env!("NOTARY_BUILD_ID"),
-        env!("NOTARY_UPDATES_ENABLED"),
-    ) {
+    if !desktop_updates_enabled(env!("NOTARY_BUILD_ID"), env!("NOTARY_UPDATES_ENABLED")) {
         return get_update_state(state);
     }
 
@@ -420,10 +415,7 @@ async fn confirm_pending_is_latest(
 }
 
 pub(super) fn schedule_update_checks(app: tauri::AppHandle) {
-    if !desktop_updates_enabled(
-        env!("NOTARY_BUILD_ID"),
-        env!("NOTARY_UPDATES_ENABLED"),
-    ) {
+    if !desktop_updates_enabled(env!("NOTARY_BUILD_ID"), env!("NOTARY_UPDATES_ENABLED")) {
         return;
     }
     tauri::async_runtime::spawn(async move {

@@ -12,8 +12,7 @@ fn main() {
         "NOTARY_BUILD_ID must be a safe non-empty release identifier"
     );
     println!("cargo:rustc-env=NOTARY_BUILD_ID={build_id}");
-    let updates_enabled =
-        std::env::var("NOTARY_UPDATES_ENABLED").unwrap_or_else(|_| "0".into());
+    let updates_enabled = std::env::var("NOTARY_UPDATES_ENABLED").unwrap_or_else(|_| "0".into());
     assert!(
         matches!(updates_enabled.as_str(), "0" | "1"),
         "NOTARY_UPDATES_ENABLED must be 0 or 1"
