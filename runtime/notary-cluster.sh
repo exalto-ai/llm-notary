@@ -9,11 +9,11 @@ env_file="$state_dir/.env"
 usage() {
   cat <<'EOF'
 Usage:
-  ./llm-notary-cluster.sh init <proxy-domain> <admin-domain> <notary-endpoint> <notary-public-key>
-  ./llm-notary-cluster.sh up
-  ./llm-notary-cluster.sh status
-  ./llm-notary-cluster.sh logs
-  ./llm-notary-cluster.sh down
+  ./notary-cluster.sh init <proxy-domain> <admin-domain> <notary-endpoint> <notary-public-key>
+  ./notary-cluster.sh up
+  ./notary-cluster.sh status
+  ./notary-cluster.sh logs
+  ./notary-cluster.sh down
 
 Set NOTARYD_CLUSTER_STATE_DIR to keep generated configuration elsewhere.
 EOF
@@ -67,7 +67,7 @@ init() {
   printf '%s' "$admin_password" > "$state_dir/secrets/admin-password"
   printf '%s' "$postgres_password" > "$state_dir/secrets/postgres-password"
   printf '%s' "postgresql://llm_notary:${postgres_password}@postgres:5432/llm_notary" > "$state_dir/secrets/postgres-url"
-  printf '%s' 'llm-notary' > "$state_dir/secrets/s3-access-key"
+  printf '%s' 'notary' > "$state_dir/secrets/s3-access-key"
   printf '%s' "$s3_secret" > "$state_dir/secrets/s3-secret-key"
   openssl rand 32 > "$state_dir/secrets/cluster-vault.key"
 
@@ -81,11 +81,11 @@ CLUSTER_STATE_DIR=$state_dir
 CLUSTER_UID=$(id -u)
 CLUSTER_GID=$(id -g)
 CLUSTER_REPLICAS=2
-CLUSTER_NETWORK_NAME=llm-notary-cluster
+CLUSTER_NETWORK_NAME=notary-cluster
 EOF
   chmod 600 "$env_file" "$state_dir/config.toml" "$state_dir"/secrets/*
 
-  echo "Initialized LLM Notary cluster state at $state_dir"
+  echo "Initialized Notary cluster state at $state_dir"
   echo "Public admin origin: https://$admin_domain"
   echo "Username: admin"
   echo "Generated password: $admin_password"

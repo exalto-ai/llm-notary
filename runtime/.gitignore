@@ -4,7 +4,7 @@
 /bundles/
 /captures/
 /traces/
-/.llm-notary-cluster/
+/.notaryd-cluster/
 *.llmcapture
 *.llmbundle
 *.key

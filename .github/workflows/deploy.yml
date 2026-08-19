@@ -209,6 +209,11 @@ jobs:
           curl --fail --retry 5 --retry-all-errors --retry-delay 2
           --max-time 20 https://notary.exalto.ai/api/readyz
       - name: Verify website download proxy
+        # This reads an object that only the "Publish clients" workflow writes,
+        # and that workflow runs after a successful deploy. A newly created
+        # downloads bucket must therefore be seeded with a published build
+        # before the first deploy, or deploy and publish deadlock: deploy fails
+        # on the missing pointer, and publish is skipped because deploy failed.
         run: |
           set -euo pipefail
           pointer="$(curl --fail --silent --show-error --location \

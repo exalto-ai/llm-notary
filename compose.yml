@@ -88,12 +88,12 @@ services:
     restart: unless-stopped
 
   site:
-    image: ${WEB_IMAGE:-llm-notary-web:local}
+    image: ${WEB_IMAGE:-notary-web:local}
     build:
       context: ./platform/web
       dockerfile: Dockerfile
       args:
-        LLM_NOTARY_PUBLIC_ORIGIN: ${NOTARY_PUBLIC_ORIGIN:?Set NOTARY_PUBLIC_ORIGIN to the public site origin}
+        NOTARY_PUBLIC_ORIGIN: ${NOTARY_PUBLIC_ORIGIN:?Set NOTARY_PUBLIC_ORIGIN to the public site origin}
     restart: unless-stopped
 
   web:

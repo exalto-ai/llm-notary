@@ -687,29 +687,29 @@ mod tests {
 
     #[test]
     fn checkout_returns_to_the_account_usage_hash_route() {
-        let public_origin = Url::parse("https://llm-notary.example/base").unwrap();
+        let public_origin = Url::parse("https://notary.example/base").unwrap();
         let (success, cancel) = checkout_return_urls(&public_origin, "purchase-id").unwrap();
         assert_eq!(
             success.as_str(),
-            "https://llm-notary.example/#/account/usage?checkout=success&purchase_id=purchase-id"
+            "https://notary.example/#/account/usage?checkout=success&purchase_id=purchase-id"
         );
         assert_eq!(
             cancel.as_str(),
-            "https://llm-notary.example/#/account/usage?checkout=cancelled&purchase_id=purchase-id"
+            "https://notary.example/#/account/usage?checkout=cancelled&purchase_id=purchase-id"
         );
     }
 
     #[test]
     fn subscription_checkout_returns_to_the_plan_and_usage_hash_route() {
-        let public_origin = Url::parse("https://llm-notary.example/base").unwrap();
+        let public_origin = Url::parse("https://notary.example/base").unwrap();
         let (success, cancel) = subscription_return_urls(&public_origin).unwrap();
         assert_eq!(
             success.as_str(),
-            "https://llm-notary.example/#/account/usage?subscription=success"
+            "https://notary.example/#/account/usage?subscription=success"
         );
         assert_eq!(
             cancel.as_str(),
-            "https://llm-notary.example/#/account/usage?subscription=cancelled"
+            "https://notary.example/#/account/usage?subscription=cancelled"
         );
     }
 

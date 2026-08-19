@@ -7,7 +7,7 @@ import { chromium } from 'playwright';
 const appRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const runtimeRoot = resolve(appRoot, '../..');
 const outputDir = resolve(runtimeRoot, 'docs/images/admin-dashboard');
-const port = Number(process.env.LLM_NOTARY_DOCS_SCREENSHOT_PORT ?? 4175);
+const port = Number(process.env.NOTARY_DOCS_SCREENSHOT_PORT ?? 4175);
 const origin = `http://127.0.0.1:${port}`;
 const fixtureNow = Date.UTC(2026, 6, 28, 16, 42, 0);
 

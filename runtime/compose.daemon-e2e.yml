@@ -16,7 +16,7 @@ services:
         if ! test -f /fixtures/ca.der; then
           openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out /fixtures/ca.key
           openssl req -x509 -new -key /fixtures/ca.key -sha256 -days 2 \
-            -subj /CN=LLM-Notary-Daemon-E2E-Root \
+            -subj /CN=Notary-Daemon-E2E-Root \
             -addext basicConstraints=critical,CA:TRUE \
             -addext keyUsage=critical,keyCertSign,cRLSign \
             -out /fixtures/ca.pem
@@ -36,8 +36,8 @@ services:
         printf '%064d' 1 > /fixtures/notary-signing-key
         chmod 600 /state/secrets/vault-passphrase
         chmod 600 /fixtures/ca.key /fixtures/server.key /fixtures/notary-signing-key
-        cp /etc/llm-notary/config-cluster-template.toml /state/config-cluster-a.toml
-        cp /etc/llm-notary/config-cluster-template.toml /state/config-cluster-b.toml
+        cp /etc/notary/config-cluster-template.toml /state/config-cluster-a.toml
+        cp /etc/notary/config-cluster-template.toml /state/config-cluster-b.toml
         chmod 600 /state/secrets/cluster-vault.key
         chmod 600 /state/config-cluster-a.toml /state/config-cluster-b.toml
     volumes:
@@ -79,7 +79,7 @@ services:
       postgres:
         condition: service_healthy
     entrypoint: ["notaryd"]
-    command: ["migrate", "--config", "/etc/llm-notary/config-postgres.toml"]
+    command: ["migrate", "--config", "/etc/notary/config-postgres.toml"]
     environment:
       NOTARYD_METADATA_MIGRATION_URL: postgresql://daemon_e2e:synthetic-daemon-e2e-password@postgres:5432/daemon_e2e
     read_only: true
@@ -150,7 +150,7 @@ services:
     depends_on:
       setup:
         condition: service_completed_successfully
-    entrypoint: ["python3", "/usr/local/libexec/llm-notary-e2e-provider.py"]
+    entrypoint: ["python3", "/usr/local/libexec/notary-e2e-provider.py"]
     volumes:
       - fixture-state:/fixtures:ro
     read_only: true
@@ -215,7 +215,7 @@ services:
         condition: service_healthy
       notary:
         condition: service_healthy
-    command: ["--config", "/etc/llm-notary/config.toml"]
+    command: ["--config", "/etc/notary/config.toml"]
     environment:
       NOTARYD_VAULT_PASSPHRASE_FILE: /state/secrets/vault-passphrase
       NOTARYD_PLATFORM_API_ORIGIN: http://127.0.0.1:9797
@@ -255,7 +255,7 @@ services:
         condition: service_healthy
       notary:
         condition: service_healthy
-    command: ["--config", "/etc/llm-notary/config-postgres.toml"]
+    command: ["--config", "/etc/notary/config-postgres.toml"]
     environment:
       NOTARYD_VAULT_PASSPHRASE_FILE: /state/secrets/vault-passphrase
       NOTARYD_PLATFORM_API_ORIGIN: http://127.0.0.1:9797
@@ -294,7 +294,7 @@ services:
         condition: service_healthy
       notary:
         condition: service_healthy
-    command: ["--config", "/etc/llm-notary/config-s3.toml"]
+    command: ["--config", "/etc/notary/config-s3.toml"]
     environment:
       NOTARYD_VAULT_PASSPHRASE_FILE: /state/secrets/vault-passphrase
       NOTARYD_PLATFORM_API_ORIGIN: http://127.0.0.1:9797
@@ -338,7 +338,7 @@ services:
         condition: service_healthy
       notary:
         condition: service_healthy
-    command: ["--config", "/etc/llm-notary/config-postgres-s3.toml"]
+    command: ["--config", "/etc/notary/config-postgres-s3.toml"]
     environment:
       NOTARYD_VAULT_PASSPHRASE_FILE: /state/secrets/vault-passphrase
       NOTARYD_PLATFORM_API_ORIGIN: http://127.0.0.1:9797

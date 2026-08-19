@@ -33,11 +33,11 @@ the current API release:
 fly secrets set --stage \
   NOTARY_API_DATABASE_URL='postgresql://…?sslmode=require' \
   NOTARY_API_MIGRATION_DATABASE_URL='postgresql://…?sslmode=require' \
-  -a llm-notary-prod-api
+  -a notary-prod-api
 ```
 
 For a self-hosted Compose deployment, put both values in a root-owned
-environment file outside the repository, such as `/etc/llm-notary/compose.env`.
+environment file outside the repository, such as `/etc/notary/compose.env`.
 For a direct local PostgreSQL instance, the two values can be the same. Pass
 that exact path with `docker compose --env-file`; never commit a connection
 URL, signing key, capture, or environment file.
@@ -70,7 +70,7 @@ reviewed, staged rollout and recovery procedure before it is merged.
    become healthy:
 
    ```bash
-   fly status -a llm-notary-prod-api
+   fly status -a notary-prod-api
    curl --fail https://notary.exalto.ai/api/readyz
    ```
 
@@ -97,8 +97,8 @@ Select `metadata.backend = "postgres"` and supply
 `NOTARYD_METADATA_DATABASE_URL` (or its `_FILE` form), then run:
 
 ```bash
-notaryd migrate --config /etc/llm-notary/config.toml
-notaryd --config /etc/llm-notary/config.toml
+notaryd migrate --config /etc/notary/config.toml
+notaryd --config /etc/notary/config.toml
 ```
 
 By default the migrate command uses the same URL. For least-privilege
@@ -172,7 +172,7 @@ usage outbox are designed for that lifecycle. Add API capacity only after
 confirming the Neon connection budget:
 
 ```bash
-fly scale count 3 -a llm-notary-prod-api
+fly scale count 3 -a notary-prod-api
 ```
 
 For a same-host Compose deployment, the `migrate` service is a required API
@@ -180,7 +180,7 @@ dependency. It applies pending migrations before any API replica starts. Deploy
 with the root-owned environment file outside the repository:
 
 ```bash
-docker compose --env-file /etc/llm-notary/compose.env up -d --scale notary-api=3
+docker compose --env-file /etc/notary/compose.env up -d --scale notary-api=3
 ```
 
 If a deployment tool updates an image without recreating services, include its

@@ -82,12 +82,12 @@ class GateAndClassificationTests(unittest.TestCase):
             / "opencode-e2e.yml"
         ).read_text()
         self.assertIn(
-            "NOTARYD_E2E_API_KEY: ${{ secrets.LLM_NOTARY_E2E_API_KEY }}",
+            "NOTARYD_E2E_API_KEY: ${{ secrets.NOTARY_E2E_API_KEY }}",
             workflow,
         )
         self.assertIn(
             "NOTARYD_E2E_SLACK_WEBHOOK_URL: "
-            "${{ secrets.LLM_NOTARY_SLACK_WEBHOOK_URL }}",
+            "${{ secrets.NOTARY_SLACK_WEBHOOK_URL }}",
             workflow,
         )
 

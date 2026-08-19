@@ -28,7 +28,7 @@ import { initialThemePreference } from './theme';
 afterEach(async () => {
   cleanup();
   window.location.hash = '';
-  window.localStorage.removeItem('llm-notary-theme');
+  window.localStorage.removeItem('notary-theme');
   await page.viewport(1280, 900);
 });
 
