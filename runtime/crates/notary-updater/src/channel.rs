@@ -22,9 +22,9 @@ use crate::{
     storage,
 };
 
-const CHANNEL_ENVELOPE_SCHEMA: &str = "llm-notary/release-channel-envelope/v1";
+const CHANNEL_ENVELOPE_SCHEMA: &str = "notary/release-channel-envelope/v1";
 
-const CHANNEL_SCHEMA: &str = "llm-notary/release-channel/v1";
+const CHANNEL_SCHEMA: &str = "notary/release-channel/v1";
 
 const CHANNEL: &str = "latest";
 
@@ -73,7 +73,7 @@ pub struct VerifiedRelease {
 
 pub fn channel_url() -> Result<Url> {
     Url::parse(&format!(
-        "{DEFAULT_PUBLIC_ORIGIN}/downloads/cli/channels/{CHANNEL}.json"
+        "{DEFAULT_PUBLIC_ORIGIN}/downloads/releases/channels/{CHANNEL}.json"
     ))
     .context("the compiled update channel URL is invalid")
 }
@@ -296,7 +296,7 @@ mod tests {
             channel: CHANNEL.into(),
             channel_revision: revision,
             build_id: "build".into(),
-            manifest_url: "https://example.com/downloads/cli/builds/build/release.json".into(),
+            manifest_url: "https://example.com/downloads/releases/builds/build/release.json".into(),
             manifest_sha256: "a".repeat(64),
             manifest_signature: "signature".into(),
         }

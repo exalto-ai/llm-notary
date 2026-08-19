@@ -274,7 +274,7 @@ jobs:
           set -euo pipefail
           key="$RUNNER_TEMP/updater.key"
           npm exec -- tauri signer generate --ci --password test-password --write-keys "$key" >/dev/null
-          LLM_NOTARY_BUILD_ID=ci-updater-fixture \
+          NOTARY_BUILD_ID=ci-updater-fixture \
             TAURI_SIGNING_PRIVATE_KEY="$key" \
             TAURI_SIGNING_PRIVATE_KEY_PASSWORD=test-password \
             npm exec -- tauri build --debug --bundles app \

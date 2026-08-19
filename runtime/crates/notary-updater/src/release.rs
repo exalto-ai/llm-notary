@@ -10,7 +10,7 @@ use tokio::io::AsyncWriteExt as _;
 
 use crate::channel::decode_wrapped_text;
 
-const RELEASE_SCHEMA: &str = "llm-notary/release/v1";
+const RELEASE_SCHEMA: &str = "notary/release/v1";
 
 pub(crate) const MANIFEST_LIMIT: usize = 512 * 1024;
 
@@ -220,7 +220,7 @@ pub(crate) fn require_https_url(url: &Url, name: &str) -> Result<()> {
 }
 
 pub(crate) fn require_build_url(url: &Url, build_id: &str, name: &str) -> Result<()> {
-    let expected = format!("/cli/builds/{build_id}/{name}");
+    let expected = format!("/releases/builds/{build_id}/{name}");
     ensure!(
         url.path().ends_with(&expected),
         "the release URL is not inside its immutable build directory"
@@ -345,6 +345,30 @@ pub fn verify_artifact_bytes(artifact: &ReleaseArtifact, bytes: &[u8]) -> Result
 mod tests {
     use super::*;
 
+    fn manifest_json(schema: &str) -> ReleaseManifest {
+        serde_json::from_value(serde_json::json!({
+            "schema_version": schema,
+            "build_id": "build",
+            "commit_sha": "0".repeat(40),
+            "version": "0.1.0",
+            "published_at": "2026-01-01T00:00:00Z",
+            "artifacts": {},
+            "desktop": {},
+            "platforms": {},
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn rejects_the_retired_release_manifest_schema() {
+        assert_eq!(RELEASE_SCHEMA, "notary/release/v1");
+        let error = validate_manifest(&manifest_json("llm-notary/release/v1")).unwrap_err();
+        assert!(error.to_string().contains("schema is unsupported"));
+        // The canonical schema passes the schema gate and fails later instead.
+        let error = validate_manifest(&manifest_json(RELEASE_SCHEMA)).unwrap_err();
+        assert!(!error.to_string().contains("schema is unsupported"));
+    }
+
     #[test]
     fn rejects_unsafe_release_urls_and_identifiers() {
         assert!(validate_identifier("../latest", "test").is_err());
@@ -352,7 +376,7 @@ mod tests {
         assert!(
             require_build_url(
                 &Url::parse(
-                    "https://example.com/downloads/cli/builds/build/notaryctl-linux-x86_64"
+                    "https://example.com/downloads/releases/builds/build/notaryctl-linux-x86_64"
                 )
                 .unwrap(),
                 "build",
@@ -362,7 +386,7 @@ mod tests {
         );
         assert!(
             require_build_url(
-                &Url::parse("https://example.com/downloads/cli/latest").unwrap(),
+                &Url::parse("https://example.com/downloads/releases/latest").unwrap(),
                 "build",
                 "notaryctl-linux-x86_64",
             )

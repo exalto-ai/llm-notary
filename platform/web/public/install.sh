@@ -2,9 +2,9 @@
 # Install the latest Notary command-line tools for Apple silicon macOS or Linux.
 set -eu
 
-download_root="${LLM_NOTARY_DOWNLOAD_ROOT:-https://notary.exalto.ai/downloads/cli}"
-channel="${LLM_NOTARY_CHANNEL:-latest}"
-install_dir="${LLM_NOTARY_INSTALL_DIR:-${HOME}/.local/bin}"
+download_root="${NOTARY_DOWNLOAD_ROOT:-https://notary.exalto.ai/downloads/releases}"
+channel="${NOTARY_CHANNEL:-latest}"
+install_dir="${NOTARY_INSTALL_DIR:-${HOME}/.local/bin}"
 
 case "$channel" in
   ""|.*|*..*|*[!a-zA-Z0-9._-]*)

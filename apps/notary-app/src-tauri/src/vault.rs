@@ -69,7 +69,7 @@ pub(super) fn agent_config_path() -> Result<PathBuf, String> {
     } else {
         return Err("Could not determine the local configuration directory.".into());
     };
-    Ok(base.join("llm-notary").join("config.toml"))
+    Ok(base.join("notary").join("config.toml"))
 }
 
 fn write_private_marker(path: &Path, contents: &[u8]) -> Result<(), String> {

@@ -1,4 +1,4 @@
-const latestDownloadsRoot = '/downloads/cli';
+const latestDownloadsRoot = '/downloads/releases';
 
 export const macosDmgName = 'LLM-Notary-macos-arm64.dmg';
 

@@ -15,13 +15,15 @@ use anyhow::ensure;
 
 #[cfg(windows)]
 use crate::{
-    install::{InstallPaths, apply_update_transaction, recover_interrupted_update},
+    install::{
+        InstallPaths, apply_update_transaction, lock_install_directory, recover_interrupted_update,
+    },
     release::validate_identifier,
     storage,
 };
 
 #[cfg(windows)]
-pub(crate) const WINDOWS_RESULT_NAME: &str = ".notary-update-result.json";
+pub(crate) const WINDOWS_RESULT_NAME: &str = ".notary-runtime-update-result.json";
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -182,6 +184,7 @@ pub(crate) fn run_windows_apply_helper_inner(
         staging_directory.parent() == Some(install_directory),
         "the helper staging directory is outside the installation directory"
     );
+    let _lock = lock_install_directory(&install)?;
     recover_interrupted_update(&install)?;
     ensure_windows_daemon_stopped(&install)?;
     apply_update_transaction(

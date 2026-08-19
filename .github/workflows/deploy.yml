@@ -213,7 +213,7 @@ jobs:
           set -euo pipefail
           pointer="$(curl --fail --silent --show-error --location \
             --retry 15 --retry-all-errors --retry-delay 2 --retry-max-time 60 \
-            https://notary.exalto.ai/downloads/cli/latest)"
+            https://notary.exalto.ai/downloads/releases/latest)"
           case "$pointer" in
             *" "*) ;;
             *) echo "the website latest pointer is malformed" >&2; exit 1 ;;

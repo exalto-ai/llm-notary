@@ -30,15 +30,13 @@ pub(super) struct DesktopUpdaterState {
 
 impl Default for DesktopUpdaterState {
     fn default() -> Self {
-        let enabled = desktop_updates_enabled(
-            env!("LLM_NOTARY_BUILD_ID"),
-            env!("LLM_NOTARY_UPDATES_ENABLED"),
-        );
+        let enabled =
+            desktop_updates_enabled(env!("NOTARY_BUILD_ID"), env!("NOTARY_UPDATES_ENABLED"));
         Self {
             view: Mutex::new(DesktopUpdateView {
                 enabled,
                 phase: if enabled { "idle" } else { "disabled" }.into(),
-                current_build_id: env!("LLM_NOTARY_BUILD_ID").into(),
+                current_build_id: env!("NOTARY_BUILD_ID").into(),
                 latest_build_id: None,
                 downloaded_bytes: 0,
                 total_bytes: None,
@@ -119,10 +117,7 @@ async fn check_and_download_update_inner(
     app: &tauri::AppHandle,
 ) -> Result<DesktopUpdateView, String> {
     let state = app.state::<DesktopUpdaterState>();
-    if !desktop_updates_enabled(
-        env!("LLM_NOTARY_BUILD_ID"),
-        env!("LLM_NOTARY_UPDATES_ENABLED"),
-    ) {
+    if !desktop_updates_enabled(env!("NOTARY_BUILD_ID"), env!("NOTARY_UPDATES_ENABLED")) {
         return get_update_state(state);
     }
 
@@ -136,11 +131,11 @@ async fn check_and_download_update_inner(
     let check = update::check_latest()
         .await
         .map_err(|error| format!("Could not check for updates: {error}"))?;
-    if check.current_build_id != env!("LLM_NOTARY_BUILD_ID") {
+    if check.current_build_id != env!("NOTARY_BUILD_ID") {
         return Err("The desktop app and release checker disagree about this build.".into());
     }
     if check.update_available
-        != build_ids_require_update(env!("LLM_NOTARY_BUILD_ID"), &check.latest_build_id)
+        != build_ids_require_update(env!("NOTARY_BUILD_ID"), &check.latest_build_id)
     {
         return Err("The signed release returned an inconsistent build identity.".into());
     }
@@ -420,17 +415,14 @@ async fn confirm_pending_is_latest(
 }
 
 pub(super) fn schedule_update_checks(app: tauri::AppHandle) {
-    if !desktop_updates_enabled(
-        env!("LLM_NOTARY_BUILD_ID"),
-        env!("LLM_NOTARY_UPDATES_ENABLED"),
-    ) {
+    if !desktop_updates_enabled(env!("NOTARY_BUILD_ID"), env!("NOTARY_UPDATES_ENABLED")) {
         return;
     }
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(Duration::from_secs(20)).await;
         loop {
             let _ = check_and_download_update(&app).await;
-            let jitter = env!("LLM_NOTARY_BUILD_ID")
+            let jitter = env!("NOTARY_BUILD_ID")
                 .bytes()
                 .fold(0_u64, |value, byte| value.wrapping_add(byte as u64))
                 % (15 * 60);

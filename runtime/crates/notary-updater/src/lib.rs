@@ -32,11 +32,11 @@ pub use release::{
 pub use storage::write_private_file_atomically;
 
 /// Public release origin compiled into official distributions.
-pub const DEFAULT_PUBLIC_ORIGIN: &str = env!("LLM_NOTARY_PUBLIC_ORIGIN");
+pub const DEFAULT_PUBLIC_ORIGIN: &str = env!("NOTARY_PUBLIC_ORIGIN");
 /// Exact source/release identity compiled into this updater.
-pub const BUILD_ID: &str = env!("LLM_NOTARY_BUILD_ID");
+pub const BUILD_ID: &str = env!("NOTARY_BUILD_ID");
 /// Whether this build may replace installed release artifacts.
-pub const UPDATES_ENABLED: bool = env!("LLM_NOTARY_UPDATES_ENABLED").as_bytes()[0] == b'1';
+pub const UPDATES_ENABLED: bool = env!("NOTARY_UPDATES_ENABLED").as_bytes()[0] == b'1';
 
 /// Finds the shared local configuration directory without depending on the
 /// daemon's full configuration model.
