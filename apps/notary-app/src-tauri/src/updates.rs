@@ -6,7 +6,7 @@ use std::{
     time::Duration,
 };
 
-use llm_notary_updater::{self as update, ReleaseArtifact};
+use notary_updater::{self as update, ReleaseArtifact};
 use notaryctl::client::TraceCounts;
 use serde::Serialize;
 use tauri::Manager;

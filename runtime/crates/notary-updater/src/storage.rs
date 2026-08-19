@@ -7,7 +7,8 @@ use std::{
 
 use anyhow::{Context, Result};
 
-pub(crate) fn write_private_file_atomically(path: &Path, contents: &[u8]) -> Result<()> {
+/// Writes a private release-adjacent file without exposing partial contents.
+pub fn write_private_file_atomically(path: &Path, contents: &[u8]) -> Result<()> {
     let pending = write_private_pending_file(path, contents)?;
     pending.replace(path)?;
     Ok(())

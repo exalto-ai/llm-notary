@@ -10,7 +10,7 @@ documentation update rules that protect LLM Notary's trust boundaries.
 | `runtime/` | self-contained public Cargo/frontend workspace, docs, tests, containers, and vendored dependencies |
 | `runtime/crates/notaryd/` | local proxy, catalog, vault integration, REST API, clustered operation, and embedded dashboard |
 | `runtime/crates/notaryctl/` | thin localhost REST command client |
-| `runtime/crates/llm-notary-updater/` | signed-update verification shared by CLI and desktop |
+| `runtime/crates/notary-updater/` | signed-update verification shared by CLI and desktop |
 | `runtime/crates/notary-core/` | Proxy-TLS protocol, evidence contracts, normalization, trust directory, and verification |
 | `runtime/crates/notary-server/` | public ticketless remote notary runtime and generic admission/lifecycle seam |
 | `runtime/apps/admin-dashboard/` | independently locked dashboard source, generated local API, tests, and assets |
@@ -69,7 +69,7 @@ Run the checks relevant to edited code:
 cargo fmt --check
 cargo fmt --manifest-path runtime/Cargo.toml --check \
   -p notary-core -p notaryd -p notaryctl \
-  -p llm-notary-updater -p notary-server
+  -p notary-updater -p notary-server
 cargo clippy \
   -p notary-api \
   -p notary-server-platform-adapter \

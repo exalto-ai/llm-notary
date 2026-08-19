@@ -6,7 +6,7 @@ use std::{
 
 use serde_json::{Value, json};
 
-use llm_notary_updater::write_private_file_atomically;
+use notary_updater::write_private_file_atomically;
 
 use super::{CliError, EXIT_CONFLICT, EXIT_ERROR};
 use crate::cli::{SkillInstallArgs, SkillTarget};
