@@ -548,12 +548,28 @@ const legalPages = {
         'If you sign in with Google, we use your stable Google account identifier, display name, and profile image to operate your account. We check that Google reports a verified email address but do not retain the address. Google access is limited to openid, email, and profile. If configured, GitHub sign-in remains available for existing accounts and requests identity only, without repository, organization, or email access. Provider access tokens are not retained.',
       ],
       [
-        'Shared sessions',
-        'Sharing is an explicit action. The service verifies and safety-scans a submitted .llmtrace package before admission, then hosts the disclosed conversation and exact admitted package at a stable link. Header values are hidden by the package’s default disclosure policy, but request and response bodies—including prompts, responses, tool definitions, and tool results—may be accessible. Do not share content you are not permitted to disclose.',
+        'Shared Traces',
+        'Sharing is an explicit action on a notarized Trace. The service verifies and safety-scans a submitted .llmtrace package before admission, then hosts the disclosed conversation and exact admitted package at a stable link. Header values are hidden by the package’s default disclosure policy, but request and response bodies—including prompts, responses, tool definitions, and tool results—may be accessible. Do not share content you are not permitted to disclose.',
       ],
       [
         'Service processing',
-        'One-off verification does not retain an uploaded package. Sharing retains the exact admitted package and its normalized trace so visitors can inspect the session and independently verify the original bytes. Temporary intake objects are removed after admission or rejection.',
+        'One-off verification does not retain an uploaded package. Sharing retains the exact admitted package and its normalized trace so visitors can inspect the Trace and independently verify the original bytes. Temporary intake objects are removed after admission or rejection.',
+      ],
+      [
+        'Plan, usage, and billing',
+        'We record the capture and notarization bytes your account settles and the storage your uploaded packages occupy, so allowances and balances can be enforced. Paid plans and additional notarization are processed by Stripe as our payment processor; card details are handled by Stripe and are not stored by this service.',
+      ],
+      [
+        'Devices and API keys',
+        'Connecting a device stores a rotating device credential and the metadata needed to list and revoke it. A deployment API key is stored only as a verifier; the complete key is shown once at creation and cannot be retrieved afterwards. You can revoke either from hosted Account settings.',
+      ],
+      [
+        'Cookies',
+        'The hosted site sets host-only cookies only where they are strictly necessary. Signing in sets a session cookie, and the sign-in redirect briefly sets state and verifier cookies for that one exchange. Separately, unlocking a password-protected shared Trace sets a cookie for that Trace so you are not asked again for 24 hours; that one is set for visitors who are not signed in. We do not set advertising or cross-site tracking cookies.',
+      ],
+      [
+        'Deleting your account',
+        'Deleting your account removes the account record and queues every stored trace artifact it owns for deletion, and signs you out. Local traces on your own devices are not touched; disconnecting or deleting does not remove evidence you hold locally.',
       ],
       [
         'Trace reports',
@@ -580,7 +596,7 @@ const legalPages = {
         'Use Notary lawfully and only with content, credentials, and provider accounts you are authorized to use. Do not interfere with the service, bypass access controls, or submit material that infringes the rights of others.',
       ],
       [
-        'Your shared sessions',
+        'Your shared Traces',
         'You are responsible for every package you choose to submit. Sharing is an explicit consent boundary: once admitted, its disclosed conversation and exact package can be accessed by anyone with the link. Unlisted is not private; it only keeps the Trace out of public Traces.',
       ],
       [

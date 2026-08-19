@@ -157,7 +157,7 @@ In the local workspace, the active tab is the page label. Begin each tab with it
 
 ### Buttons, links, and controls
 
-Primary actions are rectangular `action-fill` controls with white `action-contrast` text in both themes. Bright `action` blue is not a button fill. Labels use direct verbs: `Finalize capture`, `Share trace`, `Revoke device`, `Copy URL`. A single screen should normally have one primary action.
+Primary actions are rectangular `action-fill` controls with white `action-contrast` text in both themes. Bright `action` blue is not a button fill. Labels use direct verbs: `Notarize trace`, `Share trace`, `Revoke device`, `Copy URL`. A single screen should normally have one primary action.
 
 Secondary actions are bordered or text-only. Filters and sort controls are square, bordered, and neutral until selected. Inputs have a visible 1px rule and no container behind them. Select chevrons keep at least 12px from the right edge. Do not use rounded pills, floating action buttons, icon-only actions without an accessible label, or fake disabled-looking controls.
 
@@ -176,7 +176,7 @@ An inspector is an attached reading panel, not a card. Put the identifier and st
 ```
 REQUEST            Private on this device
 PROVIDER SESSION   Authenticated TLS
-FINALIZATION       Not started
+NOTARIZATION       Not started
 ```
 
 Facts must describe a real state or trust boundary. Do not restate a section title as prose below it.
@@ -215,7 +215,7 @@ Motion explains an evidence transition; it does not make the product feel alive.
 
 Write for a user who is deciding what to do with an evidence record. Use sentence case, direct nouns, specific verbs, and real state names.
 
-Good: `Finalize capture`, `3 captures match this view`, `Provider session — Authenticated TLS`.
+Good: `Notarize trace`, `3 traces match this view`, `Provider session — Authenticated TLS`.
 
 Avoid generic AI/product language: “unlock,” “elevate,” “seamless,” “powerful,” “reimagine,” “supercharge,” “next-level,” “magic,” “in a world,” “delve,” “leverage,” “robust,” and empty claims of trust or privacy. Avoid made-up section labels, motivational filler, decorative serial numbers, and paragraphs that only repeat visible data.
 

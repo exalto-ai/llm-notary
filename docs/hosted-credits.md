@@ -24,14 +24,14 @@ Capture and notarization use independent ledgers. The API issues a short-lived
 ticket only when the relevant allowance is positive. Redeeming the ticket
 authorizes one operation; it does not reserve the account's remaining bytes or
 create a renewable capacity lease. A capture ticket carries effective protocol
-limits. A finalization ticket is additionally bound to the exact record digest
+limits. A notarization ticket is additionally bound to the exact record digest
 and authenticated byte allowance of its source capture.
 
 Once admitted, an operation continues under the notary instance's local size,
 concurrency, and timeout limits even if the API becomes unavailable. Usage
 accounting is independent of the active session lifetime. Capture settlement
 uses the authenticated TLS application-data ciphertext bytes in both
-directions. Finalization settlement uses the exact authenticated byte allowance
+directions. Notarization settlement uses the exact authenticated byte allowance
 bound to the admission ticket and record digest. If those bytes become known
 before a later client or protocol failure, they are still charged; a failure
 before authenticated usage is established settles zero bytes.
@@ -75,7 +75,7 @@ Additional credits do not increase capture or trace-storage allowances.
 The browser chooses only a quantity and supplies an idempotency key. The API
 fixes the currency, unit price, byte amount, Stripe Price, account, and payment
 mode. Payment details are collected on Stripe-hosted Checkout and never pass
-through LLM Notary.
+through Notary.
 
 Credits are granted only after a signed webhook is reconciled against the
 current Checkout Session, its line item, PaymentIntent, and Charge. Duplicate

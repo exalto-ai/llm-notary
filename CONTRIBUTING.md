@@ -1,6 +1,6 @@
-# Contributing to LLM Notary
+# Contributing to Notary
 
-LLM Notary is a pre-release security-sensitive prototype. Keep changes small,
+Notary is a pre-release security-sensitive prototype. Keep changes small,
 make trust claims no broader than the verifier, and update affected contracts
 and documentation together.
 
@@ -24,5 +24,5 @@ Use a normal pull request for one independent change. Use `gh stack` for two or
 more dependent pull requests, ordered from the foundational change upward, as
 described in [AGENTS.md](AGENTS.md#stacked-pull-requests).
 
-LLM Notary is dual-licensed under [MIT](LICENSE-MIT) or [Apache 2.0](LICENSE-APACHE),
+Notary is dual-licensed under [MIT](LICENSE-MIT) or [Apache 2.0](LICENSE-APACHE),
 at your option.

@@ -1,6 +1,6 @@
 # Third-party notices
 
-LLM Notary is distributed under either of the licenses in `LICENSE-MIT` and
+Notary is distributed under either of the licenses in `LICENSE-MIT` and
 `LICENSE-APACHE`, at your option. The release archives include both license
 texts and this notice.
 

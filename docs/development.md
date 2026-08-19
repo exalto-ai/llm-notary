@@ -1,7 +1,7 @@
 # Development and validation
 
 This guide covers repository layout, generated contracts, test tiers, and the
-documentation update rules that protect LLM Notary's trust boundaries.
+documentation update rules that protect Notary's trust boundaries.
 
 ## Workspace map
 
@@ -149,7 +149,7 @@ binaries in Docker without publishing either loopback listener. It initializes
 the vault and schema, checks `/healthz`, and runs the REST-backed command client.
 It then uses deterministic synthetic rows and deliberately invalid encrypted
 checkpoint bytes to exercise filesystem recovery, catalog search/detail,
-finalization enqueue and bounded failure history, events, SQLite integrity,
+notarization enqueue and bounded failure history, events, SQLite integrity,
 and preservation of exact artifact bytes after the daemon container is removed
 and recreated with its durable volume.
 
@@ -157,18 +157,18 @@ The S3 entries add pinned MinIO server and client containers, create a bucket
 inside the Compose project's disposable volume, and use explicit synthetic
 credentials. The generated daemon configuration enables path-style access and
 the fixed `daemon-e2e/artifacts` prefix; insecure HTTP is enabled only for this
-internal MinIO endpoint. The harness verifies that deferred bundles and
-finalized packages use the configured prefix and private namespace, survive
-daemon recreation, and complete the same capture, list/detail, finalization,
+internal MinIO endpoint. The harness verifies that deferred captures and
+notarized packages use the configured prefix and private namespace, survive
+daemon recreation, and complete the same capture, list/detail, notarization,
 download, verification, and exact-byte sharing path as filesystem storage.
 Both ordinary JSON responses and OpenAI-style SSE streaming responses traverse
-the real proxy/notary fixture, produce finalized packages, and upload those
+the real proxy/notary fixture, produce notarized packages, and upload those
 exact verified bytes to a loopback-only hosted-share fixture with a synthetic
 API key.
 
 The two-replica row uses PostgreSQL 17 and MinIO behind a health-aware Caddy
 frontend with retries and buffering disabled. It verifies distinct replica
-incarnations, cross-replica dashboard sessions, fenced finalization ownership,
+incarnations, cross-replica dashboard sessions, fenced notarization ownership,
 cross-replica capture/package access, and safe peer removal.
 
 S3 recovery coverage includes a metadata row whose object is missing, a
@@ -213,18 +213,18 @@ The full profile also creates an ephemeral private CA and provider certificate
 inside the Compose project's disposable volume, starts a TLS provider on the
 `api.openai.com` Docker network alias, and starts the feature-gated raw notary
 fixture. It exercises a successful Proxy-TLS capture, REST-backed list and
-detail, finalization, exact package download, daemon and file verification, and
+detail, notarization, exact package download, daemon and file verification, and
 package recovery after container recreation. The provider request and response
 are fixed synthetic JSON and no external provider is contacted.
 
-The full profile also pauses one finalization immediately after immutable
+The full profile also pauses one notarization immediately after immutable
 package publication, kills the daemon, and checks that startup marks the first
 attempt interrupted. Retrying must reuse the exact package inode and SHA-256,
-produce one completion event, and finalize a second attempt without replacing
+produce one completion event, and notarize a second attempt without replacing
 the orphaned bytes.
 
 The private root hook is compiled only into the `daemon-e2e` image and is used
-only when `LLM_NOTARY_DAEMON_E2E_ROOT_CA_DER` explicitly names a regular DER
+only when `NOTARYD_E2E_ROOT_CA_DER` explicitly names a regular DER
 file. The production `daemon` image is built without that feature, ignores the
 E2E variable, retains Mozilla/WebPKI roots, and keeps the fixed provider
 allowlist. The generated CA private key and captured artifacts live only in the
@@ -320,7 +320,7 @@ attempt joined with hyphens. The publisher uploads raw command-line binaries,
 archives, the DMG, and the signed macOS updater bundle to one immutable build
 directory, then verifies each public object before moving a channel pointer.
 
-`cli/channels/latest.json` is the canonical pointer. It is a signed envelope
+`releases/channels/latest.json` is the canonical pointer. It is a signed envelope
 whose exact payload identifies an immutable `release.json` by URL, SHA-256,
 build ID, and detached Minisign signature. It also carries a monotonically
 increasing channel revision allocated as one more than the currently published,
@@ -330,10 +330,10 @@ replay or conflicting reuse. A first installation still relies on HTTPS and
 the download-bucket access policy for freshness; after first contact, bucket
 credentials alone cannot select an older signed release. The manifest in turn
 binds every installable payload to an immutable URL, byte size, and SHA-256
-value. The legacy text `cli/latest` pointer remains available for older
-installers, but the JSON pointer is moved last. The two mutable objects cannot
-move atomically, so new clients must treat the JSON pointer as the source of
-truth.
+value. A plain-text `releases/latest` pointer serves `install.sh` and the website
+download link; the signed JSON pointer is moved last. The two mutable objects
+cannot move atomically, so clients that can verify a signature must treat the
+JSON pointer as the source of truth.
 
 The macOS updater bundle also has the independent signature required by Tauri.
 Apple Developer ID signing and notarization protect the installed application;

@@ -4,7 +4,7 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
 use url::{Host, Url};
 
-/// A normalized LLM Notary API origin.
+/// A normalized Notary API origin.
 ///
 /// API requests use HTTPS unless they target a loopback address for local
 /// development. The origin has no path, credentials, query, or fragment.

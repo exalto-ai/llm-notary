@@ -122,7 +122,7 @@ grant the runtime role only the access it needs (replace the example role
 names with provisioned roles):
 
 ```sql
-GRANT CONNECT ON DATABASE llm_notary TO notaryd_runtime;
+GRANT CONNECT ON DATABASE notary TO notaryd_runtime;
 GRANT USAGE ON SCHEMA notaryd TO notaryd_runtime;
 GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES
   IN SCHEMA notaryd TO notaryd_runtime;
@@ -141,9 +141,9 @@ The runtime role must not own the schema or have `CREATE`/DDL privileges.
 Backups must capture both sides of persistence: the daemon PostgreSQL schema
 contains metadata, operation/event history, artifact locators and searchable
 plaintext previews; the selected filesystem directories or private S3 prefix
-contain the vault-encrypted checkpoints and finalized packages. To obtain a
+contain the vault-encrypted checkpoints and notarized packages. To obtain a
 mutually consistent point in this single-daemon release, stop the daemon after
-confirming no capture or finalization is running, snapshot both stores, then
+confirming no capture or notarization is running, snapshot both stores, then
 restart it. For S3, enable object versioning or use a provider snapshot that can
 restore the complete managed prefix to the same point. After a restore, verify
 every advertised artifact locator, size, and SHA-256 before serving traffic by

@@ -1,4 +1,4 @@
-# LLM Notary runtime agent guide
+# Notary runtime agent guide
 
 - `crates/notary-core` owns protocol and evidence contracts.
 - `crates/notaryd` is the local proxy/API daemon and supports optional PostgreSQL/S3 clustering.

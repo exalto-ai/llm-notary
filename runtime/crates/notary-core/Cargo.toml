@@ -3,7 +3,7 @@ name = "notary-core"
 version = "0.1.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
-description = "Proxy-TLS protocol, capture format, and local verification for LLM Notary"
+description = "Proxy-TLS protocol, capture format, and local verification for Notary"
 
 [features]
 cli = [

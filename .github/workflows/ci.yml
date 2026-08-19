@@ -283,6 +283,17 @@ jobs:
           test -n "$updater"
           test -s "$updater.sig"
 
+  terminology:
+    name: Brand and terminology
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - run: node scripts/check-terminology.mjs
+      - run: node platform/web/scripts/test-brand.mjs
+
   docs:
     name: Local workflow documentation
     needs: changes
@@ -424,7 +435,7 @@ jobs:
   required:
     name: Required checks
     if: always()
-    needs: [changes, rust, postgres-integration, windows-update, app, desktop, docs, containers]
+    needs: [changes, rust, postgres-integration, windows-update, app, desktop, docs, containers, terminology]
     runs-on: ubuntu-24.04
     env:
       CHANGES_RESULT: ${{ needs.changes.result }}
@@ -441,6 +452,7 @@ jobs:
       DOCS_RESULT: ${{ needs.docs.result }}
       CONTAINERS_CHANGED: ${{ needs.changes.outputs.containers }}
       CONTAINERS_RESULT: ${{ needs.containers.result }}
+      TERMINOLOGY_RESULT: ${{ needs.terminology.result }}
     steps:
       - name: Require every selected check to pass
         run: |
@@ -472,6 +484,7 @@ jobs:
           require_selected Desktop "$DESKTOP_REQUIRED" "$DESKTOP_RESULT"
           require_selected Documentation "$DOCS_CHANGED" "$DOCS_RESULT"
           require_selected Deployment "$CONTAINERS_CHANGED" "$CONTAINERS_RESULT"
+          require_selected Terminology true "$TERMINOLOGY_RESULT"
 
   deploy:
     name: Production deployment

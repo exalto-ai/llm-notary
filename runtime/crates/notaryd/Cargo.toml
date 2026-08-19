@@ -3,7 +3,7 @@ name = "notaryd"
 version = "0.1.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
-description = "Local LLM Notary proxy and administration daemon"
+description = "Local Notary proxy and administration daemon"
 
 [[bin]]
 name = "notaryd"

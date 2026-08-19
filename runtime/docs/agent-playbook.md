@@ -80,7 +80,7 @@ of it in the client.
 ## Example prompt for an agent
 
 ```text
-Use the LLM Notary administration service at http://127.0.0.1:8788.
+Use the Notary administration service at http://127.0.0.1:8788.
 First check /healthz and fetch /openapi.json. Use the local API without
 credentials unless it returns 401. If authentication is configured, use only
 the approved Basic credentials and never print or persist the password.
@@ -100,7 +100,7 @@ export NOTARYD_ADMIN_ORIGIN=http://127.0.0.1:8788
 
 curl --fail-with-body "$NOTARYD_ADMIN_ORIGIN/healthz"
 curl --fail-with-body "$NOTARYD_ADMIN_ORIGIN/openapi.json" \
-  > /tmp/llm-notary-openapi.json
+  > /tmp/notary-openapi.json
 ```
 
 Inspect the downloaded specification, then search and select only an identifier
