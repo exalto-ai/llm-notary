@@ -25,7 +25,7 @@ mod s3_artifact_store;
 mod service;
 mod sqlite_metadata;
 pub mod sqlite_metadata_store;
-pub use llm_notary_updater as update;
+pub use notary_updater as update;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -35,7 +35,7 @@ pub use llm_notary_updater as update;
     long_version = format!(
         "{} ({})",
         env!("CARGO_PKG_VERSION"),
-        llm_notary_updater::BUILD_ID
+        notary_updater::BUILD_ID
     )
 )]
 struct DaemonCli {
@@ -215,7 +215,7 @@ mod tests {
         assert!(error.to_string().contains(&format!(
             "{} ({})",
             env!("CARGO_PKG_VERSION"),
-            llm_notary_updater::BUILD_ID
+            notary_updater::BUILD_ID
         )));
     }
 }

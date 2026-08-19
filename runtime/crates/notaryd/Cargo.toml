@@ -38,7 +38,7 @@ hex = "0.4"
 fs2 = "0.4"
 k256 = { version = "0.13", features = ["ecdsa"] }
 notary-core = { path = "../notary-core", features = ["cli", "openapi"] }
-llm-notary-updater = { path = "../llm-notary-updater" }
+notary-updater = { path = "../notary-updater" }
 libc = "0.2"
 mime_guess = "2.0"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
