@@ -597,10 +597,10 @@ function planLabel(plan: ServicePlan): string {
 }
 
 const dashboardSections = [
-  { key: 'overview', label: 'Overview', href: '#/account' },
-  { key: 'traces', label: 'Traces', href: '#/account/traces' },
-  { key: 'usage', label: 'Plan & usage', href: '#/account/usage' },
-  { key: 'settings', label: 'Settings', href: '#/account/settings' },
+  { key: 'overview', label: 'Overview', href: '/account' },
+  { key: 'traces', label: 'Traces', href: '/account/traces' },
+  { key: 'usage', label: 'Plan & usage', href: '/account/usage' },
+  { key: 'settings', label: 'Settings', href: '/account/settings' },
 ] as const;
 
 const checkoutReturnMessages = {
@@ -1376,10 +1376,10 @@ export function Dashboard({
   const traceAttentionCount = user.usage.hosted_traces.needs_attention;
   const needsAttention =
     billing.billing_status === 'review'
-      ? { href: '#/account/usage', value: 'Billing' }
+      ? { href: '/account/usage', value: 'Billing' }
       : shareError
-        ? { href: '#/account/traces', value: 'Unavailable' }
-        : { href: '#/account/traces', value: traceAttentionCount || 'None' };
+        ? { href: '/account/traces', value: 'Unavailable' }
+        : { href: '/account/traces', value: traceAttentionCount || 'None' };
   const purchaseMode = billing.purchase_mode || 'disabled';
   const checkoutEnabled = purchaseMode === 'test' || purchaseMode === 'live';
   const subscriptionCheckoutEnabled = checkoutEnabled && billing.subscriptions_configured === true;
@@ -1401,14 +1401,14 @@ export function Dashboard({
           <nav>
             <a
               className={activeView === 'overview' ? 'active' : ''}
-              href="#/account"
+              href="/account"
               aria-current={activeView === 'overview' ? 'page' : undefined}
             >
               <span>Overview</span>
             </a>
             <a
               className={activeView === 'traces' ? 'active' : ''}
-              href="#/account/traces"
+              href="/account/traces"
               aria-current={activeView === 'traces' ? 'page' : undefined}
             >
               <span>Traces</span>
@@ -1416,14 +1416,14 @@ export function Dashboard({
             </a>
             <a
               className={activeView === 'usage' ? 'active' : ''}
-              href="#/account/usage"
+              href="/account/usage"
               aria-current={activeView === 'usage' ? 'page' : undefined}
             >
               <span>Plan & usage</span>
             </a>
             <a
               className={activeView === 'settings' ? 'active' : ''}
-              href="#/account/settings"
+              href="/account/settings"
               aria-current={activeView === 'settings' ? 'page' : undefined}
             >
               <span>Settings</span>
@@ -1944,7 +1944,7 @@ export function Dashboard({
                       Notarized local traces appear here only after you explicitly share them as
                       Unlisted or Listed. Connecting a device does not synchronize local traces.
                     </p>
-                    <a href="#/docs/share">Open the sharing guide</a>
+                    <a href="/docs/share">Open the sharing guide</a>
                   </div>
                 )}
                 {shareCursor && (

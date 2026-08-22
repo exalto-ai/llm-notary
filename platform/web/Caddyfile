@@ -15,9 +15,6 @@ http:// {
 		@shared path /s/*
 		header @shared X-Robots-Tag "noindex, nofollow, noarchive"
 
-		@legacy_docs path_regexp legacy_docs ^/docs/?(.*)$
-		redir @legacy_docs /#/docs/{re.legacy_docs.1} 308
-
 		handle {
 			root * /usr/share/caddy
 			encode zstd gzip

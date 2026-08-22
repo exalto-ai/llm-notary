@@ -61,8 +61,13 @@ impl BrowserAuthProvider {
 }
 
 fn allowed_return_to(value: String) -> Option<String> {
-    (value.starts_with("#/authorize?") || value == "#/account" || value.starts_with("#/account/"))
-        .then_some(value)
+    (value.starts_with("/authorize?")
+        || value == "/account"
+        || value.starts_with("/account/")
+        || value.starts_with("#/authorize?")
+        || value == "#/account"
+        || value.starts_with("#/account/"))
+    .then_some(value)
 }
 
 #[derive(Serialize, ToSchema)]
@@ -101,7 +106,7 @@ pub(super) async fn auth_providers(
     get,
     path = "/api/auth/github",
     summary = "Start GitHub browser sign-in",
-    params(("return_to" = Option<String>, Query, description = "Allowed in-app hash route after sign-in")),
+        params(("return_to" = Option<String>, Query, description = "Allowed in-app route after sign-in")),
     responses(
         (status = 307, description = "Temporary redirect to GitHub", headers(("Location" = String), ("Set-Cookie" = String))),
         (status = 503, body = ErrorResponse),
@@ -244,7 +249,7 @@ pub(super) async fn finish_github_login(
     get,
     path = "/api/auth/google",
     summary = "Start Google browser sign-in",
-    params(("return_to" = Option<String>, Query, description = "Allowed in-app hash route after sign-in")),
+        params(("return_to" = Option<String>, Query, description = "Allowed in-app route after sign-in")),
     responses(
         (status = 307, description = "Temporary redirect to Google", headers(("Location" = String), ("Set-Cookie" = String))),
         (status = 503, body = ErrorResponse),
@@ -706,13 +711,21 @@ mod tests {
     #[test]
     fn browser_auth_returns_only_to_bounded_in_app_routes() {
         for route in [
-            "#/authorize?request_id=request-1",
+            "/authorize?request_id=request-1",
+            "/account",
+            "/account/traces",
+            "#/authorize?request_id=legacy-request-1",
             "#/account",
             "#/account/traces",
         ] {
             assert_eq!(allowed_return_to(route.to_owned()).as_deref(), Some(route));
         }
-        for route in ["https://attacker.example", "//attacker.example", "#/traces"] {
+        for route in [
+            "https://attacker.example",
+            "//attacker.example",
+            "/traces",
+            "#/traces",
+        ] {
             assert!(allowed_return_to(route.to_owned()).is_none());
         }
     }

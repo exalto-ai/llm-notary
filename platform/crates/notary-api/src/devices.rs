@@ -278,14 +278,18 @@ pub(super) async fn start_device_authorization(
         .await
         .map_err(database_error)?;
         if inserted.rows_affected() == 1 {
-            let verification_uri_complete = format!(
-                "{}#/authorize?request_id={}&approval_secret={}",
-                state.public_origin, request_id, approval_secret
-            );
+            let mut verification_uri_complete = state
+                .public_origin
+                .join("authorize")
+                .map_err(|error| ApiError::internal(error.into()))?;
+            verification_uri_complete
+                .query_pairs_mut()
+                .append_pair("request_id", &request_id)
+                .append_pair("approval_secret", &approval_secret);
             return Ok(Json(DeviceAuthorizationStarted {
                 request_id,
                 user_code,
-                verification_uri_complete,
+                verification_uri_complete: verification_uri_complete.to_string(),
                 expires_in: DEVICE_AUTHORIZATION_TTL_SECS,
                 interval: 3,
                 poll_secret,

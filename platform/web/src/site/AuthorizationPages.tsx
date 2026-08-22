@@ -158,7 +158,7 @@ export function DeviceAuthorizationApproval({
         action={
           <a
             className="button button-dark"
-            href={`/#/signin?return_to=${encodeURIComponent(window.location.hash)}`}
+            href={`/signin?return_to=${encodeURIComponent(`/${route}`)}`}
           >
             Choose sign-in method
           </a>

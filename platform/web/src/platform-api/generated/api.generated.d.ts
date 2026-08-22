@@ -1675,7 +1675,7 @@ export interface operations {
     start_github_login: {
         parameters: {
             query?: {
-                /** @description Allowed in-app hash route after sign-in */
+                /** @description Allowed in-app route after sign-in */
                 return_to?: string;
             };
             header?: never;
@@ -1762,7 +1762,7 @@ export interface operations {
     start_google_login: {
         parameters: {
             query?: {
-                /** @description Allowed in-app hash route after sign-in */
+                /** @description Allowed in-app route after sign-in */
                 return_to?: string;
             };
             header?: never;

@@ -338,7 +338,7 @@
           {
             "name": "return_to",
             "in": "query",
-            "description": "Allowed in-app hash route after sign-in",
+            "description": "Allowed in-app route after sign-in",
             "required": false,
             "schema": {
               "type": "string"
@@ -477,7 +477,7 @@
           {
             "name": "return_to",
             "in": "query",
-            "description": "Allowed in-app hash route after sign-in",
+            "description": "Allowed in-app route after sign-in",
             "required": false,
             "schema": {
               "type": "string"
