@@ -662,13 +662,13 @@ pub(super) fn checkout_return_urls(
 ) -> ApiResult<(Url, Url)> {
     let build = |outcome: &str| -> ApiResult<Url> {
         let mut url = public_origin
-            .join("/")
+            .join("account/usage")
             .map_err(|error| ApiError::internal(error.into()))?;
         let query = url::form_urlencoded::Serializer::new(String::new())
             .append_pair("checkout", outcome)
             .append_pair("purchase_id", purchase_id)
             .finish();
-        url.set_fragment(Some(&format!("/account/usage?{query}")));
+        url.set_query(Some(&query));
         Ok(url)
     };
     let success = build("success")?;
@@ -679,9 +679,9 @@ pub(super) fn checkout_return_urls(
 pub(super) fn subscription_return_urls(public_origin: &Url) -> ApiResult<(Url, Url)> {
     let build = |outcome: &str| -> ApiResult<Url> {
         let mut url = public_origin
-            .join("/")
+            .join("account/usage")
             .map_err(|error| ApiError::internal(error.into()))?;
-        url.set_fragment(Some(&format!("/account/usage?subscription={outcome}")));
+        url.set_query(Some(&format!("subscription={outcome}")));
         Ok(url)
     };
     Ok((build("success")?, build("cancelled")?))

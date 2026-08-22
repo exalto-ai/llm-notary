@@ -152,7 +152,7 @@ export function ListedTracesPreview({
           <span>Listed Notarized traces will appear here after they’re shared.</span>
         </div>
       )}
-      <a className="button button-dark" href="#/traces">
+      <a className="button button-dark" href="/traces">
         Browse Traces
       </a>
     </section>
@@ -1030,7 +1030,7 @@ export function PublicTraces({
         <section className="collection-empty">
           <b>No traces have been shared publicly yet.</b>
           <p>Listed Notarized traces will appear here after they’re shared.</p>
-          <a href="#/docs/share">Learn how sharing works</a>
+          <a href="/docs/share">Learn how sharing works</a>
         </section>
       )}
     </main>
@@ -1310,7 +1310,7 @@ export function PublicTracePage({
       robots.dataset.sharePage = 'true';
       document.head.appendChild(robots);
     }
-    // Public discovery happens through /#/traces. Individual share URLs are
+    // Public discovery happens through /traces. Individual share URLs are
     // uniformly noindex so raw HTML, password gates, and failure states cannot
     // disagree about whether metadata is safe to crawl.
     robots.content = 'noindex, nofollow, noarchive';
@@ -1374,7 +1374,7 @@ export function PublicTracePage({
       <main className="share-page share-page-state" role="alert">
         <h1>Shared trace unavailable</h1>
         <p>{loadError} It may be expired, stopped, missing, or temporarily unavailable.</p>
-        <a href="/#/traces">Open public Traces</a>
+        <a href="/traces">Open public Traces</a>
       </main>
     );
   if (passwordRequired)
@@ -1402,7 +1402,7 @@ export function PublicTracePage({
             </p>
           )}
           <div>
-            <a href="/#/traces">Back to public Traces</a>
+            <a href="/traces">Back to public Traces</a>
             <button type="submit" disabled={!password || checkingPassword}>
               {checkingPassword ? 'Opening…' : 'Open trace'}
             </button>
@@ -1622,7 +1622,7 @@ export function PublicTracePage({
             <button type="button" onClick={copyShareLink}>
               {copied ? 'Copied' : 'Copy link'}
             </button>
-            <a href="/#/docs/trace-packages">Verify independently</a>
+            <a href="/docs/trace-packages">Verify independently</a>
             <button type="button" onClick={() => setReportOpen(true)}>
               Report this trace
             </button>

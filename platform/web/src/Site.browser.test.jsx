@@ -27,7 +27,7 @@ import { initialThemePreference } from './theme';
 
 afterEach(async () => {
   cleanup();
-  window.location.hash = '';
+  window.history.replaceState({}, '', '/');
   window.localStorage.removeItem('notary-theme');
   await page.viewport(1280, 900);
 });
@@ -162,14 +162,14 @@ describe('hosted site', () => {
     await expect.element(page.getByText('Apple silicon · macOS 12+')).not.toBeInTheDocument();
     await expect
       .element(page.getByRole('link', { name: 'build on the Notary stack' }))
-      .toHaveAttribute('href', '#/docs/getting-started');
+      .toHaveAttribute('href', '/docs/getting-started');
     expect(document.querySelector('.hero-developer-path')?.textContent).toBe(
       'or, build on the Notary stack',
     );
     await expect.element(page.getByRole('link', { name: 'Get started' })).not.toBeInTheDocument();
     await expect
       .element(page.getByRole('link', { name: 'Browse Traces' }))
-      .toHaveAttribute('href', '#/traces');
+      .toHaveAttribute('href', '/traces');
     expect(document.querySelector('.receipt [data-provider-icon="openai"]')).not.toBeNull();
   });
 
@@ -184,7 +184,7 @@ describe('hosted site', () => {
     const productNav = document.querySelector('.product-nav');
     await expect
       .element(page.getByRole('link', { name: 'Notary home' }))
-      .toHaveAttribute('href', '/#/');
+      .toHaveAttribute('href', '/');
     await expect.element(page.getByText('Notary by Exalto')).toBeVisible();
     expect(Array.from(productNav.querySelectorAll('a'), (link) => link.textContent)).toEqual([
       'Traces',
@@ -196,17 +196,17 @@ describe('hosted site', () => {
     ]);
     await expect
       .element(page.getByRole('link', { name: 'Pricing' }))
-      .toHaveAttribute('href', '/#/pricing');
+      .toHaveAttribute('href', '/pricing');
     const footer = page.getByRole('navigation', { name: 'Footer' });
     await expect
       .element(footer.getByRole('link', { name: 'Verify' }))
-      .toHaveAttribute('href', '/#/verify');
+      .toHaveAttribute('href', '/verify');
     await expect
       .element(footer.getByRole('link', { name: 'Traces' }))
-      .toHaveAttribute('href', '/#/traces');
+      .toHaveAttribute('href', '/traces');
     await expect
       .element(footer.getByRole('link', { name: 'Registry' }))
-      .toHaveAttribute('href', '/#/registry');
+      .toHaveAttribute('href', '/registry');
   });
 
   test('uses the endorsed identity in browser titles', async () => {
@@ -214,6 +214,8 @@ describe('hosted site', () => {
     render(<App loadCurrentUser={async () => null} />);
 
     await expect.element(page.getByRole('heading', { name: 'Privacy Policy' })).toBeVisible();
+    expect(window.location.pathname).toBe('/privacy');
+    expect(window.location.hash).toBe('');
     expect(document.title).toBe('Privacy · Notary by Exalto');
   });
 
@@ -231,7 +233,7 @@ describe('hosted site', () => {
     await expect.element(page.getByText('Credit boundary')).not.toBeInTheDocument();
     await expect
       .element(page.getByRole('link', { name: 'See plan and usage details' }))
-      .toHaveAttribute('href', '/#/docs/hosted-credits');
+      .toHaveAttribute('href', '/docs/hosted-credits');
   });
 
   test('sends the macOS action to install options when the latest pointer is unavailable', async () => {
@@ -244,7 +246,7 @@ describe('hosted site', () => {
     );
 
     const download = page.getByRole('link', { name: /Download for macOS/ });
-    await expect.element(download).toHaveAttribute('href', '#/docs/getting-started');
+    await expect.element(download).toHaveAttribute('href', '/docs/getting-started');
     await expect.element(page.getByText('View install options')).toBeVisible();
   });
 
@@ -419,7 +421,7 @@ describe('hosted site', () => {
     await expect.element(page.getByRole('heading', { name: 'Already signed in' })).toBeVisible();
     await expect
       .element(page.getByRole('link', { name: 'Open Account' }))
-      .toHaveAttribute('href', '/#/account');
+      .toHaveAttribute('href', '/account');
   });
 
   test('offers Auto, Light, and Dark in Account appearance settings', async () => {
@@ -499,12 +501,12 @@ describe('hosted site', () => {
       (link) => [link.textContent?.trim(), link.getAttribute('href')],
     );
     expect(accountRoutes).toEqual([
-      ['Overview', '#/account'],
-      ['Traces3', '#/account/traces'],
-      ['Plan & usage', '#/account/usage'],
-      ['Settings', '#/account/settings'],
+      ['Overview', '/account'],
+      ['Traces3', '/account/traces'],
+      ['Plan & usage', '/account/usage'],
+      ['Settings', '/account/settings'],
     ]);
-    expect(document.querySelector('a[href^="#/dashboard"]')).toBeNull();
+    expect(document.querySelector('a[href^="/dashboard"]')).toBeNull();
   });
 
   test('summarizes plan, usage, shared traces, and attention in the Account overview', async () => {
@@ -1612,7 +1614,7 @@ describe('hosted site', () => {
     );
     expect(
       page.getByRole('link', { name: 'Verify independently' }).element().getAttribute('href'),
-    ).toBe('/#/docs/trace-packages');
+    ).toBe('/docs/trace-packages');
 
     cleanup();
     render(
@@ -1744,7 +1746,7 @@ describe('hosted site', () => {
       .toBeVisible();
     await expect
       .element(page.getByRole('link', { name: 'Open public Traces' }))
-      .toHaveAttribute('href', '/#/traces');
+      .toHaveAttribute('href', '/traces');
     expect(document.body.textContent).not.toContain('Storage backend failed');
     expect(document.body.textContent).not.toContain('Trace content failed');
     expect(document.querySelector('meta[name="robots"]')?.getAttribute('content')).toContain(

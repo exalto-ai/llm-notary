@@ -772,10 +772,10 @@ mod tests {
                 "notarization": { "total_granted_bytes": 20_000_000, "total_used_bytes": 2_000_000, "total_remaining_bytes": 18_000_000, "included_monthly_remaining_bytes": 8_000_000, "supplemental_remaining_bytes": 10_000_000, "next_grant_expiration": 1_800_000_000 }
             },
             "links": {
-                "account": "https://example.test/#/account",
-                "usage": "https://example.test/#/account/usage",
-                "plans": "https://example.test/#/pricing",
-                "settings": "https://example.test/#/account/settings"
+                "account": "https://example.test/account",
+                "usage": "https://example.test/account/usage",
+                "plans": "https://example.test/pricing",
+                "settings": "https://example.test/account/settings"
             }
         });
         let rich_output = human_output(
@@ -790,7 +790,7 @@ mod tests {
         assert!(rich_output.contains("notarization used 1.9 MiB / 19.1 MiB granted"));
         assert!(rich_output.contains("capture used 976.6 KiB / 9.5 MiB granted"));
         assert!(rich_output.contains("next notarization expiration 1800000000"));
-        assert!(rich_output.contains("settings https://example.test/#/account/settings"));
+        assert!(rich_output.contains("settings https://example.test/account/settings"));
         assert_eq!(
             human_output(
                 &CliCommand::Account {
@@ -982,7 +982,7 @@ mod tests {
                     Json(json!({
                         "request_id": "request_123",
                         "user_code": "ABCD-EFGH",
-                        "verification_uri_complete": "https://notary.example/#/authorize?request_id=request_123&approval_secret=secret",
+                        "verification_uri_complete": "https://notary.example/authorize?request_id=request_123&approval_secret=secret",
                         "expires_in_seconds": 600,
                         "poll_interval_seconds": 5,
                         "state": "pending"

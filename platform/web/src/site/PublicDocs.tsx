@@ -9,6 +9,7 @@ import {
   CommandItem,
   CommandList,
 } from '@/components/ui/command';
+import { navigateTo } from './navigation';
 
 type DocPageKey =
   | 'overview'
@@ -670,7 +671,7 @@ const docAliases: Record<string, DocPageKey> = {
 };
 
 function docHref(key: DocPageKey, section?: string) {
-  const route = key === 'overview' ? '#/docs' : `#/docs/${key}`;
+  const route = key === 'overview' ? '/docs' : `/docs/${key}`;
   return section ? `${route}?section=${encodeURIComponent(section)}` : route;
 }
 
@@ -749,7 +750,7 @@ function DocsBlock({ block, pageKey }: { block: DocBlock; pageKey: DocPageKey })
   const Heading = docHeadingLevel(pageKey, block) === 3 ? 'h3' : 'h2';
   const slug = docSlug(block.heading);
   const code = block.code;
-  const headingLink = `${window.location.origin}${window.location.pathname}${docHref(pageKey, slug)}`;
+  const headingLink = `${window.location.origin}${docHref(pageKey, slug)}`;
   const [copied, setCopied] = useState(false);
   const copy = (value: string) => {
     copyToClipboard(value);
@@ -940,7 +941,7 @@ function DocsSearch({ open, onClose }: { open: boolean; onClose: () => void }) {
     if (open) setQuery('');
   }, [open]);
   const choose = (result: { key: DocPageKey }) => {
-    window.location.hash = docHref(result.key);
+    navigateTo(docHref(result.key));
     onClose();
   };
   return (
@@ -1116,9 +1117,8 @@ export function Docs({ pageKey, section }: { pageKey: string; section?: string }
       }
       if (event.key === 'Escape') setSearchOpen(false);
       if (event.altKey && event.key === 'ArrowLeft' && previousKey)
-        window.location.hash = docHref(previousKey);
-      if (event.altKey && event.key === 'ArrowRight' && nextKey)
-        window.location.hash = docHref(nextKey);
+        navigateTo(docHref(previousKey));
+      if (event.altKey && event.key === 'ArrowRight' && nextKey) navigateTo(docHref(nextKey));
     };
     window.addEventListener('keydown', handleShortcut);
     return () => window.removeEventListener('keydown', handleShortcut);

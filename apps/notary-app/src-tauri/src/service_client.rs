@@ -62,10 +62,10 @@ pub(super) fn validate_account_link(value: &str) -> Result<Url, String> {
             Host::Ipv6(address) => address.is_loopback(),
         });
     let fragment = url.fragment().unwrap_or_default();
-    let route = fragment
+    let legacy_route = fragment
         .split_once('?')
         .map_or(fragment, |(route, _)| route);
-    let authorization_query = fragment.strip_prefix("/authorize?").is_some_and(|query| {
+    let valid_authorization_query = |query: &str| {
         let mut request_id = false;
         let mut approval_secret = false;
         for pair in query.split('&') {
@@ -86,17 +86,31 @@ pub(super) fn validate_account_link(value: &str) -> Result<Url, String> {
             }
         }
         request_id && approval_secret
-    });
-    let allowed_route = matches!(
-        route,
-        "/account" | "/account/traces" | "/account/usage" | "/pricing" | "/account/settings"
-    ) || authorization_query;
+    };
+    let legacy_authorization = fragment
+        .strip_prefix("/authorize?")
+        .is_some_and(valid_authorization_query);
+    let clean_authorization = url.path() == "/authorize"
+        && url.fragment().is_none()
+        && url.query().is_some_and(valid_authorization_query);
+    let clean_route = url.fragment().is_none()
+        && url.query().is_none()
+        && matches!(
+            url.path(),
+            "/account" | "/account/traces" | "/account/usage" | "/pricing" | "/account/settings"
+        );
+    let legacy_allowed_route = url.path() == "/"
+        && url.query().is_none()
+        && matches!(
+            legacy_route,
+            "/account" | "/account/traces" | "/account/usage" | "/pricing" | "/account/settings"
+        );
+    let allowed_route =
+        clean_route || clean_authorization || legacy_allowed_route || legacy_authorization;
     if (!secure && !loopback_http)
         || url.host_str().is_none()
         || !url.username().is_empty()
         || url.password().is_some()
-        || url.path() != "/"
-        || url.query().is_some()
         || !allowed_route
     {
         return Err(

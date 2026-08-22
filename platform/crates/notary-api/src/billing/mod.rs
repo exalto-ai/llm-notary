@@ -458,7 +458,8 @@ async fn create_portal_session(
         .await?
         .ok_or_else(|| ApiError::not_found("This account has no active Stripe subscription"))?;
     let mut return_url = state.billing.public_origin.clone();
-    return_url.set_fragment(Some("/account/usage"));
+    return_url.set_path("/account/usage");
+    return_url.set_fragment(None);
     let portal = stripe
         .create_portal_session(&customer_id, &return_url)
         .await
@@ -686,30 +687,30 @@ mod tests {
     use super::*;
 
     #[test]
-    fn checkout_returns_to_the_account_usage_hash_route() {
+    fn checkout_returns_to_the_account_usage_route() {
         let public_origin = Url::parse("https://notary.example/base").unwrap();
         let (success, cancel) = checkout_return_urls(&public_origin, "purchase-id").unwrap();
         assert_eq!(
             success.as_str(),
-            "https://notary.example/#/account/usage?checkout=success&purchase_id=purchase-id"
+            "https://notary.example/account/usage?checkout=success&purchase_id=purchase-id"
         );
         assert_eq!(
             cancel.as_str(),
-            "https://notary.example/#/account/usage?checkout=cancelled&purchase_id=purchase-id"
+            "https://notary.example/account/usage?checkout=cancelled&purchase_id=purchase-id"
         );
     }
 
     #[test]
-    fn subscription_checkout_returns_to_the_plan_and_usage_hash_route() {
+    fn subscription_checkout_returns_to_the_plan_and_usage_route() {
         let public_origin = Url::parse("https://notary.example/base").unwrap();
         let (success, cancel) = subscription_return_urls(&public_origin).unwrap();
         assert_eq!(
             success.as_str(),
-            "https://notary.example/#/account/usage?subscription=success"
+            "https://notary.example/account/usage?subscription=success"
         );
         assert_eq!(
             cancel.as_str(),
-            "https://notary.example/#/account/usage?subscription=cancelled"
+            "https://notary.example/account/usage?subscription=cancelled"
         );
     }
 

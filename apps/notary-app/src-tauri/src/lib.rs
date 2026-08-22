@@ -314,17 +314,17 @@ mod tests {
     fn account_links_allow_only_known_routes_and_device_authorization_parameters() {
         assert!(
             validate_account_link(
-                "https://notary.example/#/authorize?request_id=abc&approval_secret=xyz"
+                "https://notary.example/authorize?request_id=abc&approval_secret=xyz"
             )
             .is_ok()
         );
+        assert!(validate_account_link("https://notary.example/account/usage").is_ok());
+        assert!(validate_account_link("https://notary.example/account/traces").is_ok());
         assert!(validate_account_link("https://notary.example/#/account/usage").is_ok());
         assert!(validate_account_link("https://notary.example/#/account/traces").is_ok());
+        assert!(validate_account_link("https://notary.example/authorize?request_id=abc").is_err());
         assert!(
-            validate_account_link("https://notary.example/#/authorize?request_id=abc").is_err()
-        );
-        assert!(
-            validate_account_link("https://notary.example/#/authorize?request_id=abc&evil=xyz")
+            validate_account_link("https://notary.example/authorize?request_id=abc&evil=xyz")
                 .is_err()
         );
         assert!(validate_account_link("http://example.com/#/account").is_err());

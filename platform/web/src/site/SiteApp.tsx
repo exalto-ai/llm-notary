@@ -35,6 +35,7 @@ import {
   HostedNotaryRecord,
   RegistryPage,
 } from './AuthorizationPages';
+import { currentRoute, migrateLegacyRoute, navigateTo } from './navigation';
 import { Docs } from './PublicDocs';
 import {
   ListedTracesPreview,
@@ -78,7 +79,7 @@ export function MacosDownloadLink({
   return (
     <a
       className="button button-dark hero-download"
-      href={downloadHref || '#/docs/getting-started'}
+      href={downloadHref || '/docs/getting-started'}
       download={downloadHref ? macosDmgName : undefined}
       aria-busy={!downloadHref && !unavailable}
     >
@@ -308,8 +309,7 @@ function AccountMenu({ user, onLogout }: { user: AccountIdentity; onLogout: () =
             </div>
           </div>
           <div className="account-actions">
-            {/* biome-ignore lint/a11y/useValidAnchor: This root-relative hash URL is SPA navigation, including from direct-share paths. */}
-            <a href="/#/account" onClick={() => setOpen(false)}>
+            <a href="/account" onClick={() => setOpen(false)}>
               Account
             </a>
             <button
@@ -341,15 +341,15 @@ export function Header({
 }) {
   return (
     <header className="nav-wrap">
-      <a className="brand" href="/#/" aria-label="Notary home">
+      <a className="brand" href="/" aria-label="Notary home">
         <PenMark /> <span>Notary</span>
       </a>
       <nav className="product-nav">
-        <a href="/#/traces">Traces</a>
-        <a href="/#/verify">Verify</a>
-        <a href="/#/registry">Registry</a>
-        <a href="/#/docs">Docs</a>
-        <a href="/#/pricing">Pricing</a>
+        <a href="/traces">Traces</a>
+        <a href="/verify">Verify</a>
+        <a href="/registry">Registry</a>
+        <a href="/docs">Docs</a>
+        <a href="/pricing">Pricing</a>
         {user ? (
           <AccountMenu user={user} onLogout={onLogout} />
         ) : !hideSignIn && authPending ? (
@@ -362,7 +362,7 @@ export function Header({
           </span>
         ) : (
           !hideSignIn && (
-            <a className="sign-in-link" href="/#/signin">
+            <a className="sign-in-link" href="/signin">
               <span>Sign in</span>
             </a>
           )
@@ -446,6 +446,9 @@ export function SignInPage({
   }, [loadProviders]);
   const requestedReturn = new URLSearchParams(route.split('?')[1] || '').get('return_to');
   const returnTo =
+    requestedReturn?.startsWith('/authorize?') ||
+    requestedReturn === '/account' ||
+    requestedReturn?.startsWith('/account/') ||
     requestedReturn?.startsWith('#/authorize?') ||
     requestedReturn === '#/account' ||
     requestedReturn?.startsWith('#/account/')
@@ -461,7 +464,7 @@ export function SignInPage({
           <p className="auth-intro">
             You’re signed in as <b>{accountName(user)}</b>.
           </p>
-          <a className="button button-dark" href="/#/account">
+          <a className="button button-dark" href="/account">
             Open Account
           </a>
         </section>
@@ -507,8 +510,8 @@ export function SignInPage({
           </div>
         )}
         <p className="auth-legal">
-          By continuing, you agree to the <a href="/#/terms">Terms</a> and acknowledge the{' '}
-          <a href="/#/privacy">Privacy Policy</a>.
+          By continuing, you agree to the <a href="/terms">Terms</a> and acknowledge the{' '}
+          <a href="/privacy">Privacy Policy</a>.
         </p>
       </section>
     </main>
@@ -522,11 +525,11 @@ export function Footer() {
         <b>Notary</b> <small>by Exalto</small> <span>· © 2026</span>
       </span>
       <nav aria-label="Footer">
-        <a href="/#/verify">Verify</a>
-        <a href="/#/traces">Traces</a>
-        <a href="/#/registry">Registry</a>
-        <a href="/#/privacy">Privacy</a>
-        <a href="/#/terms">Terms</a>
+        <a href="/verify">Verify</a>
+        <a href="/traces">Traces</a>
+        <a href="/registry">Registry</a>
+        <a href="/privacy">Privacy</a>
+        <a href="/terms">Terms</a>
       </nav>
     </footer>
   );
@@ -689,7 +692,7 @@ function VerificationArchitecture() {
       </div>
       <TrustColumns />
       <div className="section-link">
-        <a href="#/docs/how-it-works">Learn more about the trust model</a>
+        <a href="/docs/how-it-works">Learn more about the trust model</a>
       </div>
     </section>
   );
@@ -765,7 +768,7 @@ function PricingSection() {
       <p className="pricing-fine-print">
         *No fixed trace-storage limit. Fair-use and abuse controls still apply.
       </p>
-      <a className="pricing-details-link" href="/#/docs/hosted-credits">
+      <a className="pricing-details-link" href="/docs/hosted-credits">
         See plan and usage details
       </a>
     </section>
@@ -782,7 +785,7 @@ export function Landing({ loadLatestPointer: loadPointer = loadLatestPointer }) 
         <div className="hero-actions">
           <MacosDownloadLink loadPointer={loadPointer} />
           <p className="hero-developer-path">
-            or, <a href="#/docs/getting-started">build on the Notary stack</a>
+            or, <a href="/docs/getting-started">build on the Notary stack</a>
           </p>
         </div>
       </section>
@@ -811,7 +814,7 @@ export function Landing({ loadLatestPointer: loadPointer = loadLatestPointer }) 
               {'\n'}admin <em>127.0.0.1:8788</em>
             </code>
           </pre>
-          <a href="#/docs/getting-started">Installation and setup</a>
+          <a href="/docs/getting-started">Installation and setup</a>
         </div>
       </section>
       <PricingSection />
@@ -830,7 +833,7 @@ export function Landing({ loadLatestPointer: loadPointer = loadLatestPointer }) 
             <span>Portable package</span>
           </div>
           <div className="button-row">
-            <a className="button button-dark" href="#/verify">
+            <a className="button button-dark" href="/verify">
               Verify a package
             </a>
           </div>
@@ -912,7 +915,7 @@ export function App({
 }: {
   loadCurrentUser?: typeof getCurrentUser;
 } = {}) {
-  const [route, setRoute] = useState(window.location.hash || '#/');
+  const [route, setRoute] = useState(currentRoute);
   const [user, setUser] = useState<CurrentUser | null>(null);
   const [authPending, setAuthPending] = useState(true);
   const [theme, setTheme] = useState(initialThemePreference);
@@ -932,12 +935,18 @@ export function App({
     return () => media.removeEventListener('change', applyTheme);
   }, [theme]);
   useEffect(() => {
-    const update = () => setRoute(window.location.hash || '#/');
+    migrateLegacyRoute();
+    const update = () => setRoute(currentRoute());
+    update();
+    window.addEventListener('popstate', update);
     window.addEventListener('hashchange', update);
-    return () => window.removeEventListener('hashchange', update);
+    return () => {
+      window.removeEventListener('popstate', update);
+      window.removeEventListener('hashchange', update);
+    };
   }, []);
   useEffect(() => {
-    const nextSection = route.replace(/^#\/?/, '').split(/[/?]/)[0];
+    const nextSection = route.split(/[/?]/)[0];
     window.requestAnimationFrame(() => {
       if (nextSection === 'pricing') {
         document.getElementById('pricing')?.scrollIntoView({
@@ -976,14 +985,14 @@ export function App({
   const logout = async () => {
     await logoutBrowser();
     setUser(null);
-    if (window.location.hash === '#/account') window.location.hash = '#/';
+    if (section === 'account') navigateTo('/');
   };
   const accountDeleted = () => {
     setUser(null);
     setAuthPending(false);
-    window.location.hash = '#/';
+    navigateTo('/');
   };
-  const path = route.replace(/^#\/?/, '');
+  const path = route;
   const directShare = window.location.pathname.match(/^\/s\/([^/]+)\/?$/);
   const directTraceId = directShare ? decodeURIComponent(directShare[1]) : null;
   const routePath = path.split('?')[0];
@@ -1059,7 +1068,7 @@ export function App({
         />
       ) : section === 'account' ? (
         <SignInPage
-          route={`signin?return_to=${encodeURIComponent(`#/${canonicalPath}`)}`}
+          route={`signin?return_to=${encodeURIComponent(`/${canonicalPath}`)}`}
           user={null}
         />
       ) : isLegalPage(section) ? (
